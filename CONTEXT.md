@@ -42,7 +42,7 @@ Een deterministische bewerking die financiële inzichten uit de contextgraph pro
 
 ## EngineCore
 
-De kleine, domeinoverschrijdende kern die identiteit, relaties, tijd, herkomst, zekerheid, contextvoorstellen, bevestiging en contextmutaties beheert. Financiële verdieping hoort niet rechtstreeks in de EngineCore.
+De kleine, domeinoverschrijdende kern die identiteit, relaties, tijd, herkomst, zekerheid, contextvoorstellen, bevestiging en contextmutaties beheert. De EngineCore herkent zelf geen financiële patronen: agentoperators en deterministische regelmodules kunnen via hetzelfde voorstelcontract kandidaatpatronen aanleveren. Financiële verdieping hoort niet rechtstreeks in de EngineCore.
 
 ## Domeinmodule
 
@@ -70,7 +70,7 @@ De eigenschap dat contextbestanden, regels, validatie, berekeningen en uitvoer l
 
 ## Agentoperator
 
-Een optionele maar beoogde gesprekspartner die gebruikersintentie begrijpt, vragen stelt, voorstellen formuleert en engine-tools orkestreert. De engine blijft zonder agent deterministisch bruikbaar voor import, validatie, mutatie en analyse. De agentoperator behoort niet tot de bron van financiële waarheid.
+Een optionele maar beoogde gesprekspartner die gebruikersintentie begrijpt, vragen stelt, voorstellen formuleert en engine-tools orkestreert. Vrije tekst die de agentoperator interpreteert wordt altijd eerst een expliciet, gestructureerd contextvoorstel; de interpretatie wordt nooit rechtstreeks een bevestigd financieel feit. De engine blijft zonder agent deterministisch bruikbaar voor import, validatie, mutatie en analyse. De agentoperator behoort niet tot de bron van financiële waarheid.
 
 ## CLI-contract
 
@@ -98,7 +98,7 @@ Een tijdsgebonden uitspraak over een eigenschap van een entiteit of een relatie 
 
 ## Beweringsconflict
 
-De toestand waarin beweringen voor dezelfde exclusieve betekenis en overlappende geldigheidsperiode elkaar tegenspreken. De beweringen en hun bewijs blijven bewaard, maar mogen niet gelijktijdig als actieve waarheid gelden. De engine markeert het conflict en blokkeert alleen analyses waarvoor het conflict relevant is, totdat een gebruiker of geldige regel het oplost.
+De toestand waarin beweringen voor dezelfde exclusieve betekenis en overlappende geldigheidsperiode elkaar tegenspreken. De beweringen en hun bewijs blijven bewaard, maar mogen niet gelijktijdig als actieve waarheid gelden. Een afwijkende waarneming bij een bevestigd patroon is niet vanzelf een beweringsconflict: zij blijft een afzonderlijk aandachtspunt zolang zij het exclusieve feit niet rechtstreeks tegenspreekt. De engine markeert echte conflicten en blokkeert alleen analyses waarvoor het conflict relevant is, totdat een gebruiker of geldige regel het oplost.
 
 ## Constraintdeclaratie
 
@@ -150,15 +150,15 @@ Een herkenbare of verwachte reeks financiële ontvangsten of betalingen met een 
 
 ## Bronadapter
 
-Een afgebakende vertaler die gegevens uit een externe vorm omzet naar het canonieke invoerformaat van de engine, zonder dat het domeinmodel afhankelijk wordt van die bron. Versie 0.1 ondersteunt handmatige invoer via het agentgesprek, een Tally-adapter en een generieke adapter voor genormaliseerde CSV- of JSON-transacties.
+Een afgebakende vertaler die gegevens uit een externe vorm omzet naar het canonieke invoerformaat van de engine, zonder dat het domeinmodel afhankelijk wordt van die bron. Een expliciet geautoriseerde bronadapter mag letterlijke bronvelden, zoals bedrag, valuta, boekingsdatum en bronreferentie, zonder bevestiging per record als waarneming importeren. Classificaties, identiteitskoppelingen en andere financiële betekenis die niet letterlijk uit de bron volgen blijven contextvoorstellen. Een broncorrectie overschrijft het eerdere record niet, maar wordt als herleidbare opvolger vastgelegd. Versie 0.1 ondersteunt handmatige invoer via het agentgesprek, een Tally-adapter en een generieke adapter voor genormaliseerde CSV- of JSON-transacties.
 
 ## Contextvoorstel
 
-Een mogelijke toevoeging aan de financiële contextgraph die de engine uit brongegevens afleidt. Terugkerende transacties kunnen bijvoorbeeld leiden tot voorstellen voor vaste inkomsten, vaste uitgaven, variabele kosten of andere financiële patronen. Het voorstel bewaart zijn bewijs, periode, bedrag of bandbreedte en zekerheid. Een contextvoorstel is nog geen bevestigd financieel feit.
+Een mogelijke toevoeging aan de financiële contextgraph die een agentoperator of deterministische regelmodule uit brongegevens afleidt en via een gedeeld voorstelcontract bij de EngineCore indient. Terugkerende transacties kunnen bijvoorbeeld leiden tot voorstellen voor vaste inkomsten, vaste uitgaven, variabele kosten of andere financiële patronen. Het voorstel benoemt zijn producent en bewaart zijn bewijs, periode, bedrag of bandbreedte en producent-specifieke zekerheid. De EngineCore valideert de vorm en herleidbaarheid, maar voert de patroonherkenning niet zelf uit. Een contextvoorstel is nog geen bevestigd financieel feit. Bij een expliciete gebruikerscorrectie blijft het oorspronkelijke voorstel onveranderd als gecorrigeerd spoor bewaard; de correctie vormt nieuw gebruikersbewijs voor de bevestigde bewering.
 
 ## Bevestigd financieel feit
 
-Een contextvoorstel dat de gebruiker expliciet heeft bevestigd, of informatie die de gebruiker rechtstreeks als feit heeft verstrekt. De engine promoveert afgeleide patronen nooit zelfstandig tot bevestigde financiële feiten. Nieuwe brongegevens mogen een bevestigd feit wel actualiseren volgens vooraf bepaalde regels of een mogelijke afwijking signaleren.
+Een contextvoorstel dat de gebruiker expliciet heeft bevestigd, of bewust gestructureerde informatie die de gebruiker rechtstreeks als feit bij de EngineCore heeft ingediend. Vrije tekst die een agentoperator heeft geïnterpreteerd blijft eerst een contextvoorstel en vereist bevestiging van de gestructureerde betekenis. De engine promoveert afgeleide patronen nooit zelfstandig tot bevestigde financiële feiten. In versie 0.1 actualiseren nieuwe brongegevens een afgeleid bevestigd feit nooit automatisch: een agentoperator of regelmodule dient een herleidbaar opvolgvoorstel in, waarna bevestiging de oude bewering in de tijd afsluit en de nieuwe activeert.
 
 ## Persoon
 

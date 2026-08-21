@@ -24,11 +24,11 @@ Een implementatieklare technische specificatie voor Financial Context Engine v0.
 - [Wat behoort tot de EngineCore en welke graph-invarianten bewaakt die?](issues/02-enginecore-graph-invariants.md) — Gebruik stabiele entiteiten en tijdsgebonden beweringen met verplichte herkomst, expliciete kennis- en verificatiestatus, conservatieve identiteit, declaratieve constraints en lichte atomaire single-writermutaties.
 - [Welke minimale financiële domeinsnede hoort in v0.1?](issues/03-v0-1-domain-slice.md) — Composeer een kleine set financiële entiteiten met expliciete juridische, gebruiks- en toerekeningsrelaties; laat modules typen verfijnen en houd rekeningtransacties, zelfstandige saldostanden en objecten met een eigen levensloop onderscheiden.
 - [Hoe worden context en mutatiehistorie canoniek opgeslagen?](issues/04-canonical-files-and-history.md) — Publiceer gevalideerde, getypeerde JSON-collecties als complete UUIDv7-generaties via een atomaire `CURRENT`-wissel, met waardevrije historie, conservatief herstel, begrensde retentie en pakketbrede privacy-scrubs.
+- [Hoe verloopt de keten van bronbewijs naar bevestigd financieel feit?](issues/05-evidence-proposal-confirmation.md) — Scheid letterlijke bronwaarnemingen van voorstellen door agent of regelmodule; laat EngineCore herleidbaarheid en bevestiging bewaken en wijzig afgeleide feiten alleen via bevestigde opvolgvoorstellen.
 
 ## Not yet specified
 
 - De concrete Nederlandse producttypen en landspecifieke validaties worden zichtbaar nadat de domeinmodulegrenzen zijn vastgesteld.
-- De precieze vraagprioritering en workflowtoestanden hangen af van het voorstelmodel en de analysevereisten.
 - De extensiecontracten voor nieuwe domeinen, landen en talen hangen af van de EngineCore en de eerste Nederlandse modules.
 - De vorm van de uiteindelijke implementatiehandoff kan pas worden vastgesteld wanneer de technische beslissingen samen een coherent geheel vormen.
 
