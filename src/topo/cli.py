@@ -16,6 +16,7 @@ from topo.contracts import (
     validate_request,
     validate_response,
 )
+from topo.identifiers import uuid7
 from topo.storage import initialize_package
 
 
@@ -25,16 +26,34 @@ class IncompatibleContractVersion(Exception):
         super().__init__(str(requested))
 
 
-def _request_from_stdin() -> Dict[str, Any]:
-    if sys.stdin.isatty():
+def _request_from_source(request_path: Optional[Path]) -> Dict[str, Any]:
+    if request_path is not None:
+        payload = request_path.read_text(encoding="utf-8")
+    elif sys.stdin.isatty():
         return {"contract_version": CONTRACT_VERSION}
-    payload = sys.stdin.read()
+    else:
+        payload = sys.stdin.read()
     if not payload.strip():
         return {"contract_version": CONTRACT_VERSION}
     value = json.loads(payload)
     if not isinstance(value, dict):
         raise ValueError("request must be a JSON object")
     return value
+
+
+def _normalize_request(
+    command: str, args: argparse.Namespace, request: Dict[str, Any]
+) -> Dict[str, Any]:
+    normalized = dict(request)
+    if command == "context.init":
+        normalized["package"] = str(args.package)
+        normalized.setdefault("operation_id", uuid7())
+        normalized.setdefault("expected_generation", None)
+        normalized.setdefault(
+            "actor", {"actor_type": "human", "actor_id": "local-user"}
+        )
+        normalized.setdefault("reason", "Initialize local Topo context")
+    return normalized
 
 
 def _write_json(value: Dict[str, Any]) -> None:
@@ -57,7 +76,7 @@ def _error_envelope(
     params: Dict[str, Any],
     retryable: bool,
 ) -> Dict[str, Any]:
-    return {
+    response = {
         "contract_version": CONTRACT_VERSION,
         "command": command,
         "operation_id": None,
@@ -81,6 +100,8 @@ def _error_envelope(
         "next_actions": [],
         "trace": {"normalized_request": request, "refs": []},
     }
+    validate_response(command, response)
+    return response
 
 
 def _success_envelope(
@@ -93,6 +114,7 @@ def _success_envelope(
     generation_after: Optional[str] = None,
     operation_id: Optional[str] = None,
     refs: Optional[list[Dict[str, str]]] = None,
+    outcome: str = "succeeded",
 ) -> Dict[str, Any]:
     response: Dict[str, Any] = {
         "contract_version": CONTRACT_VERSION,
@@ -101,7 +123,7 @@ def _success_envelope(
         "context_id": context_id,
         "generation_before": generation_before,
         "generation_after": generation_after,
-        "outcome": "succeeded",
+        "outcome": outcome,
         "result": result,
         "diagnostics": [],
         "next_actions": [],
@@ -133,7 +155,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    json_output = "--json" in arguments
+    arguments = [argument for argument in arguments if argument != "--json"]
+    request_path: Optional[Path] = None
+    if "--request" in arguments:
+        request_index = arguments.index("--request")
+        try:
+            request_path = Path(arguments[request_index + 1])
+        except IndexError:
+            _parser().error("--request requires a file path")
+        del arguments[request_index : request_index + 2]
+    args = _parser().parse_args(arguments)
+    args.json_output = json_output
     command = (
         f"contract.{args.contract_command}"
         if args.group == "contract"
@@ -141,7 +175,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     request: Dict[str, Any] = {}
     try:
-        request = _request_from_stdin()
+        request = _normalize_request(command, args, _request_from_source(request_path))
         _require_supported_contract(request)
         if args.group == "contract" and args.contract_command == "describe":
             validate_request(command, request)
@@ -153,19 +187,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         if args.group == "context" and args.context_command == "init":
             validate_request(command, request)
-            result = initialize_package(args.package)
+            initialization = initialize_package(
+                args.package,
+                operation_id=request["operation_id"],
+                actor=request["actor"],
+                reason=request["reason"],
+            )
+            result = initialization.result
             response = _success_envelope(
                 command,
                 request,
                 result,
                 context_id=result["context_id"],
+                generation_before=(
+                    result["generation_id"] if initialization.replayed else None
+                ),
                 generation_after=result["generation_id"],
-                operation_id=result["mutation_id"],
+                operation_id=request["operation_id"],
                 refs=[
                     {"ref_type": "generation", "id": result["generation_id"]},
                     {"ref_type": "entity", "id": result["person_id"]},
                     {"ref_type": "entity", "id": result["household_id"]},
                 ],
+                outcome="no_change" if initialization.replayed else "succeeded",
             )
             _write_json(response)
             return 0

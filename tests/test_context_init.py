@@ -31,6 +31,20 @@ def run_topo(*args: str, request: dict | None = None) -> subprocess.CompletedPro
     )
 
 
+def run_topo_exact(*args: str, request: dict | None = None) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+    return subprocess.run(
+        [sys.executable, "-m", "topo", *args],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        input=json.dumps(request) if request is not None else None,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -108,7 +122,7 @@ def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Pat
     discovery = json.loads(described.stdout)
     assert discovery["outcome"] == "succeeded"
     assert discovery["result"]["supported_contract_versions"] == ["topo.cli/0.1"]
-    assert [command["command"] for command in discovery["result"]["commands"]] == [
+    assert [command["command"] for command in discovery["result"]["commands"]][:3] == [
         "context.init",
         "contract.describe",
         "contract.schema",
@@ -165,6 +179,15 @@ def test_unknown_major_contract_version_fails_without_effect(tmp_path: Path) -> 
     }
     assert not package.exists()
 
+    schema_response = run_topo(
+        "contract",
+        "schema",
+        "context.init",
+        request={"contract_version": "topo.cli/0.1"},
+    )
+    error_schema = json.loads(schema_response.stdout)["result"]["output_schema"]
+    Draft202012Validator(error_schema).validate(response)
+
 
 def test_reinitialization_never_replaces_a_published_generation(tmp_path: Path) -> None:
     package = tmp_path / "existing.topo"
@@ -188,3 +211,96 @@ def test_reinitialization_never_replaces_a_published_generation(tmp_path: Path) 
         for path in package.rglob("*")
         if path.is_file()
     } == original
+
+
+def test_normative_cli_form_exposes_every_v01_command_schema() -> None:
+    request = {"contract_version": "topo.cli/0.1"}
+
+    described = run_topo_exact("contract", "describe", "--json", request=request)
+
+    assert described.returncode == 0, described.stderr
+    commands = {
+        item["command"] for item in json.loads(described.stdout)["result"]["commands"]
+    }
+    assert commands == {
+        "context.init",
+        "contract.describe",
+        "contract.schema",
+        "source.import",
+        "discover.run",
+        "proposal.submit",
+        "proposal.confirm",
+        "proposal.correct",
+        "proposal.reject",
+        "validate",
+        "analyze.run",
+        "explain",
+        "workflow.next",
+    }
+
+    completed = run_topo_exact(
+        "contract", "schema", "proposal.confirm", "--json", request=request
+    )
+    assert completed.returncode == 0, completed.stderr
+    input_schema = json.loads(completed.stdout)["result"]["input_schema"]
+    assert {
+        "contract_version",
+        "operation_id",
+        "context_id",
+        "expected_generation",
+        "actor",
+        "reason",
+        "authorization",
+        "proposal_ref",
+    } <= set(input_schema["required"])
+
+
+def test_init_normalizes_file_input_and_replays_the_same_operation(tmp_path: Path) -> None:
+    package = tmp_path / "replayable.topo"
+    request_path = tmp_path / "init-request.json"
+    operation_id = "0198f1a0-0000-7000-8000-000000000001"
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": operation_id,
+        "expected_generation": None,
+        "actor": {"actor_type": "human", "actor_id": "local-user"},
+        "reason": "Initialize Noor's local context",
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    first = run_topo_exact(
+        "context",
+        "init",
+        "--package",
+        str(package),
+        "--request",
+        str(request_path),
+        "--json",
+    )
+
+    assert first.returncode == 0, first.stderr
+    first_response = json.loads(first.stdout)
+    assert first_response["operation_id"] == operation_id
+    assert first_response["trace"]["normalized_request"] == {
+        **request,
+        "package": str(package),
+    }
+
+    current_before = (package / "CURRENT").read_bytes()
+    second = run_topo_exact(
+        "context",
+        "init",
+        "--package",
+        str(package),
+        "--request",
+        str(request_path),
+        "--json",
+    )
+
+    assert second.returncode == 0, second.stderr
+    second_response = json.loads(second.stdout)
+    assert second_response["outcome"] == "no_change"
+    assert second_response["result"] == first_response["result"]
+    assert second_response["generation_before"] == first_response["generation_after"]
+    assert second_response["generation_after"] == first_response["generation_after"]
+    assert (package / "CURRENT").read_bytes() == current_before

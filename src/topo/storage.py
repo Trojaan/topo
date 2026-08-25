@@ -1,18 +1,40 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Dict
+import tempfile
+from typing import Any, Dict, Optional
 
+from topo.canonical_validation import validate_initial_generation
 from topo.identifiers import uuid7
 
 
 CONTEXT_SCHEMA_VERSION = "topo.context/0.1"
 MANIFEST_SCHEMA_VERSION = "topo.manifest/0.1"
+COLLECTION_FILES = (
+    "entities.json",
+    "assertions.json",
+    "evidence.json",
+    "proposals.json",
+)
+
+
+@dataclass(frozen=True)
+class Initialization:
+    result: Dict[str, Any]
+    replayed: bool
+
+
+@dataclass(frozen=True)
+class InitialPackage:
+    result: Dict[str, Any]
+    generation_files: Dict[str, bytes]
+    journal: bytes
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -42,11 +64,9 @@ def _collection(records: list[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def initialize_package(package: Path) -> Dict[str, Any]:
-    """Create and publish the complete first canonical generation."""
-    if package.exists():
-        raise FileExistsError(str(package))
-
+def _build_initial_package(
+    *, operation_id: str, actor: Dict[str, str], reason: str
+) -> InitialPackage:
     now = datetime.now(timezone.utc)
     instant = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     effective_date = now.date().isoformat()
@@ -145,50 +165,18 @@ def initialize_package(package: Path) -> Dict[str, Any]:
         "schema_version": "topo.journal/0.1",
         "entries": [
             {
+                "operation_id": operation_id,
                 "mutation_id": mutation_id,
                 "operation": "context.init",
+                "actor": actor,
+                "reason": reason,
                 "generation_before": None,
                 "generation_after": generation_id,
                 "recorded_at": instant,
             }
         ],
     }
-
-    created_package = False
-    try:
-        package.mkdir(mode=0o700, parents=False)
-        created_package = True
-        generations = package / "generations"
-        staging = package / "staging"
-        evidence_records = package / "evidence" / "records"
-        history = package / "history"
-        for directory in (generations, staging, evidence_records, history):
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-        staged_generation = staging / generation_id
-        staged_generation.mkdir(mode=0o700)
-        for filename, payload in collections.items():
-            _write_durable(staged_generation / filename, payload)
-        _write_durable(staged_generation / "manifest.json", _json_bytes(manifest))
-        _sync_directory(staged_generation)
-
-        published_generation = generations / generation_id
-        os.replace(staged_generation, published_generation)
-        _sync_directory(generations)
-
-        _write_durable(history / "journal.json", _json_bytes(journal))
-        _sync_directory(history)
-
-        current_temporary = package / (".CURRENT." + uuid7())
-        _write_durable(current_temporary, (generation_id + "\n").encode("ascii"))
-        os.replace(current_temporary, package / "CURRENT")
-        _sync_directory(package)
-    except BaseException:
-        if created_package and not (package / "CURRENT").exists():
-            shutil.rmtree(package)
-        raise
-
-    return {
+    result = {
         "context_id": context_id,
         "generation_id": generation_id,
         "mutation_id": mutation_id,
@@ -196,3 +184,114 @@ def initialize_package(package: Path) -> Dict[str, Any]:
         "household_id": household_id,
         "membership_assertion_id": membership_id,
     }
+    initial = InitialPackage(
+        result=result,
+        generation_files={**collections, "manifest.json": _json_bytes(manifest)},
+        journal=_json_bytes(journal),
+    )
+    validate_initial_generation(initial.generation_files, initial.result)
+    return initial
+
+
+def _publish_initial_package(package: Path, initial: InitialPackage) -> None:
+    parent = package.parent
+    temporary = Path(tempfile.mkdtemp(prefix=f".{package.name}.staging-", dir=str(parent)))
+    os.chmod(temporary, 0o700)
+    try:
+        generations = temporary / "generations"
+        staging = temporary / "staging"
+        evidence_records = temporary / "evidence" / "records"
+        history = temporary / "history"
+        for directory in (generations, staging, evidence_records, history):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        generation_id = initial.result["generation_id"]
+        staged_generation = staging / generation_id
+        staged_generation.mkdir(mode=0o700)
+        for filename, payload in initial.generation_files.items():
+            _write_durable(staged_generation / filename, payload)
+        _sync_directory(staged_generation)
+
+        os.replace(staged_generation, generations / generation_id)
+        _sync_directory(generations)
+        _write_durable(history / "journal.json", initial.journal)
+        _sync_directory(history)
+
+        temporary_current = temporary / ".CURRENT.tmp"
+        _write_durable(temporary_current, (generation_id + "\n").encode("ascii"))
+        os.replace(temporary_current, temporary / "CURRENT")
+        _sync_directory(temporary)
+
+        if package.exists():
+            raise FileExistsError(str(package))
+        os.replace(temporary, package)
+        _sync_directory(parent)
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return value
+
+
+def _replayed_initialization(
+    package: Path, operation_id: str
+) -> Optional[Initialization]:
+    if not package.exists():
+        return None
+    journal = _read_json(package / "history" / "journal.json")
+    entries = journal.get("entries", [])
+    if not entries or entries[0].get("operation_id") != operation_id:
+        raise FileExistsError(str(package))
+
+    generation_id = (package / "CURRENT").read_text(encoding="utf-8").strip()
+    generation = package / "generations" / generation_id
+    manifest = _read_json(generation / "manifest.json")
+    for filename in COLLECTION_FILES:
+        payload = (generation / filename).read_bytes()
+        actual = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if manifest["files"].get(filename) != actual:
+            raise ValueError(f"checksum mismatch for {filename}")
+
+    entities = _read_json(generation / "entities.json")["records"]
+    assertions = _read_json(generation / "assertions.json")["records"]
+    entity_ids = {record["entity_type"]: record["id"] for record in entities}
+    membership = next(
+        record
+        for record in assertions
+        if record["predicate"] == "domain.parties/household_membership"
+    )
+    result = {
+        "context_id": manifest["context_id"],
+        "generation_id": generation_id,
+        "mutation_id": manifest["mutation_id"],
+        "person_id": entity_ids["person"],
+        "household_id": entity_ids["household"],
+        "membership_assertion_id": membership["id"],
+    }
+    return Initialization(result=result, replayed=True)
+
+
+def initialize_package(
+    package: Path,
+    *,
+    operation_id: str,
+    actor: Dict[str, str],
+    reason: str,
+) -> Initialization:
+    """Create and atomically publish, or idempotently replay, the first generation."""
+    replay = _replayed_initialization(package, operation_id)
+    if replay is not None:
+        return replay
+    initial = _build_initial_package(
+        operation_id=operation_id,
+        actor=actor,
+        reason=reason,
+    )
+    _publish_initial_package(package, initial)
+    return Initialization(result=initial.result, replayed=False)
