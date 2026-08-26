@@ -129,7 +129,10 @@ def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Pat
     ]
 
     schemas: dict[str, dict] = {}
-    for command in ("context.init", "contract.describe", "contract.schema"):
+    discovered_commands = [
+        descriptor["command"] for descriptor in discovery["result"]["commands"]
+    ]
+    for command in discovered_commands:
         completed = run_topo("contract", "schema", command, request=request)
         assert completed.returncode == 0, completed.stderr
         response = json.loads(completed.stdout)
@@ -137,6 +140,8 @@ def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Pat
         assert response["result"]["command"] == command
         Draft202012Validator.check_schema(response["result"]["input_schema"])
         Draft202012Validator.check_schema(response["result"]["output_schema"])
+        assert response["result"]["input_schema"]["additionalProperties"] is False
+        assert response["result"]["output_schema"]["additionalProperties"] is False
         schemas[command] = response["result"]["output_schema"]
 
     Draft202012Validator(schemas["contract.describe"]).validate(discovery)
@@ -253,6 +258,28 @@ def test_normative_cli_form_exposes_every_v01_command_schema() -> None:
         "authorization",
         "proposal_ref",
     } <= set(input_schema["required"])
+
+    source_schema = json.loads(
+        run_topo_exact(
+            "contract", "schema", "source.import", "--json", request=request
+        ).stdout
+    )["result"]["input_schema"]
+    assert {"adapter", "records"} <= set(source_schema["required"])
+
+    analysis_schema = json.loads(
+        run_topo_exact(
+            "contract", "schema", "analyze.run", "--json", request=request
+        ).stdout
+    )["result"]["input_schema"]
+    assert {
+        "analysis_id",
+        "analysis_contract_version",
+        "analysis_scope",
+        "as_of_date",
+        "period",
+        "reporting_currency",
+        "scenario",
+    } <= set(analysis_schema["required"])
 
 
 def test_init_normalizes_file_input_and_replays_the_same_operation(tmp_path: Path) -> None:
