@@ -111,7 +111,9 @@ COLLECTION_SCHEMAS = {
     "entities.json": _collection_schema(_entity_schema()),
     "assertions.json": _collection_schema(_assertion_schema()),
     "evidence.json": _collection_schema(_evidence_schema()),
-    "proposals.json": _collection_schema({"type": "object"}),
+    "proposals.json": _collection_schema(
+        {"type": "object", "additionalProperties": False}
+    ),
 }
 
 
@@ -141,7 +143,20 @@ MANIFEST_SCHEMA = {
         "context_schema_version": {"const": "topo.context/0.1"},
         "mutation_id": _uuid7(),
         "recorded_at": {"type": "string", "format": "date-time"},
-        "modules": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "modules": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["module_id", "module_version", "checksum"],
+                "properties": {
+                    "module_id": {"type": "string", "minLength": 1},
+                    "module_version": {"type": "string", "minLength": 1},
+                    "checksum": {"type": "string", "pattern": r"^sha256:[0-9a-f]{64}$"},
+                },
+            },
+        },
         "active_rule_packages": {"type": "array", "maxItems": 0},
         "files": {
             "type": "object",

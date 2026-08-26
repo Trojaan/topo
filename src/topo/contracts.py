@@ -83,6 +83,56 @@ def _scope() -> Dict[str, Any]:
     )
 
 
+def _scenario_assumption() -> Dict[str, Any]:
+    common = {
+        "target_ref": _ref(("entity",)),
+        "money": _money(),
+        "effective_date": {"type": "string", "format": "date"},
+        "reason": {"type": "string", "minLength": 1},
+    }
+    recurring = _closed_object(
+        {
+            "assumption_type": {"const": "recurring_cashflow_change"},
+            **common,
+            "change": {"enum": ["add", "replace", "end"]},
+        },
+        ("assumption_type", "target_ref", "change", "money", "effective_date", "reason"),
+    )
+    one_off = _closed_object(
+        {
+            "assumption_type": {"const": "one_off_cashflow"},
+            **common,
+            "direction": {"enum": ["inflow", "outflow"]},
+        },
+        ("assumption_type", "target_ref", "direction", "money", "effective_date", "reason"),
+    )
+    override = _closed_object(
+        {"assumption_type": {"const": "value_override"}, **common},
+        ("assumption_type", "target_ref", "money", "effective_date", "reason"),
+    )
+    return {"oneOf": [recurring, one_off, override]}
+
+
+def _scenario() -> Dict[str, Any]:
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["scenario_id", "assumptions"],
+                "properties": {
+                    "scenario_id": _uuid7(),
+                    "assumptions": {
+                        "type": "array",
+                        "items": _scenario_assumption(),
+                    },
+                },
+            },
+            {"type": "null"},
+        ]
+    }
+
+
 def _actor() -> Dict[str, Any]:
     return {
         "type": "object",
@@ -302,7 +352,7 @@ def input_schema(command: str) -> Dict[str, Any]:
                         {"type": "null"},
                     ]
                 },
-                "scenario": {"type": ["object", "null"]},
+                "scenario": _scenario(),
             }
         )
         required.extend(
@@ -313,7 +363,6 @@ def input_schema(command: str) -> Dict[str, Any]:
                 "analysis_scope",
                 "as_of_date",
                 "period",
-                "reporting_currency",
                 "scenario",
             ]
         )
@@ -459,6 +508,34 @@ def _result_schema(command: str) -> Dict[str, Any]:
             ("valid", "validated_generation"),
         )
     if command == "analyze.run":
+        requirement = _closed_object(
+            {
+                "requirement": {"type": "string", "minLength": 1},
+                "state": {
+                    "enum": [
+                        "present",
+                        "missing",
+                        "conflicting",
+                        "insufficiently_current",
+                        "unallocated",
+                    ]
+                },
+                "impact": {"type": "string", "minLength": 1},
+            },
+            ("requirement", "state", "impact"),
+        )
+        calculation_step = _closed_object(
+            {
+                "step_id": {"type": "string", "minLength": 1},
+                "operation": {"type": "string", "minLength": 1},
+                "inputs": {
+                    "type": "array",
+                    "items": {"oneOf": [_ref(), _money()]},
+                },
+                "unrounded_result": _money(),
+            },
+            ("step_id", "operation", "inputs", "unrounded_result"),
+        )
         component = _closed_object(
             {
                 "component_id": {"type": "string", "minLength": 1},
@@ -466,7 +543,23 @@ def _result_schema(command: str) -> Dict[str, Any]:
                 "value": _money(),
                 "used_assertion_refs": {"type": "array", "items": _ref(("assertion",))},
                 "used_evidence_refs": {"type": "array", "items": _ref(("evidence",))},
-                "requirements": {"type": "array", "items": _closed_object({})},
+                "assumptions": {
+                    "type": "array",
+                    "items": _scenario_assumption(),
+                },
+                "calculation_steps": {
+                    "type": "array",
+                    "items": calculation_step,
+                },
+                "rounding": _closed_object(
+                    {
+                        "mode": {"enum": ["currency_default", "none"]},
+                        "presented_decimals": {"type": "integer", "minimum": 0},
+                    },
+                    ("mode", "presented_decimals"),
+                ),
+                "requirements": {"type": "array", "items": requirement},
+                "blockers": {"type": "array", "items": _diagnostic_schema()},
                 "warnings": {"type": "array", "items": _diagnostic_schema()},
                 "next_question": {"type": ["string", "null"]},
                 "explain_ref": _ref(("analysis_component",)),
@@ -476,7 +569,11 @@ def _result_schema(command: str) -> Dict[str, Any]:
                 "status",
                 "used_assertion_refs",
                 "used_evidence_refs",
+                "assumptions",
+                "calculation_steps",
+                "rounding",
                 "requirements",
+                "blockers",
                 "warnings",
                 "next_question",
                 "explain_ref",

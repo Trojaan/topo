@@ -277,9 +277,28 @@ def test_normative_cli_form_exposes_every_v01_command_schema() -> None:
         "analysis_scope",
         "as_of_date",
         "period",
-        "reporting_currency",
         "scenario",
     } <= set(analysis_schema["required"])
+    assert "reporting_currency" in analysis_schema["properties"]
+    assert "reporting_currency" not in analysis_schema["required"]
+    scenario_object = analysis_schema["properties"]["scenario"]["oneOf"][0]
+    assert scenario_object["additionalProperties"] is False
+
+    analysis_output = json.loads(
+        run_topo_exact(
+            "contract", "schema", "analyze.run", "--json", request=request
+        ).stdout
+    )["result"]["output_schema"]
+    result_schema = analysis_output["allOf"][0]["then"]["properties"]["result"]
+    component_schema = result_schema["properties"]["components"]["items"]
+    assert {
+        "assumptions",
+        "calculation_steps",
+        "rounding",
+        "requirements",
+        "blockers",
+        "warnings",
+    } <= set(component_schema["required"])
 
 
 def test_init_normalizes_file_input_and_replays_the_same_operation(tmp_path: Path) -> None:
