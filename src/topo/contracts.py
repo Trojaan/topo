@@ -1,18 +1,33 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict
+from typing import Literal, cast
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 from topo.identifiers import UUID7_PATTERN
+from topo.models import (
+    CommandDescriptor,
+    DescribeResult,
+    JsonObject,
+    SchemaResult,
+    model_to_json_object,
+)
 
+SchemaObject = dict[str, object]
 
-CONTRACT_VERSION = "topo.cli/0.1"
+CONTRACT_VERSION: Literal["topo.cli/0.1"] = "topo.cli/0.1"
 COMMANDS = (
     "context.init",
     "contract.describe",
     "contract.schema",
+    "proposal.submit",
+    "proposal.confirm",
+    "proposal.correct",
+    "proposal.reject",
+)
+SCHEMA_COMMANDS = (
+    *COMMANDS,
     "source.import",
     "discover.run",
     "proposal.submit",
@@ -38,13 +53,13 @@ def schema_ref(command: str, direction: str) -> str:
     return f"topo://schema/{slug}-{direction}/0.1"
 
 
-def _uuid7() -> Dict[str, Any]:
+def _uuid7() -> SchemaObject:
     return {"type": "string", "pattern": UUID7_PATTERN}
 
 
 def _closed_object(
-    properties: Dict[str, Any], required: tuple[str, ...] = ()
-) -> Dict[str, Any]:
+    properties: SchemaObject, required: tuple[str, ...] = ()
+) -> SchemaObject:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -53,8 +68,8 @@ def _closed_object(
     }
 
 
-def _ref(ref_types: tuple[str, ...] = ()) -> Dict[str, Any]:
-    ref_type: Dict[str, Any] = {"type": "string"}
+def _ref(ref_types: tuple[str, ...] = ()) -> SchemaObject:
+    ref_type: SchemaObject = {"type": "string"}
     if ref_types:
         ref_type = {"enum": list(ref_types)}
     return _closed_object(
@@ -63,7 +78,7 @@ def _ref(ref_types: tuple[str, ...] = ()) -> Dict[str, Any]:
     )
 
 
-def _money() -> Dict[str, Any]:
+def _money() -> SchemaObject:
     return _closed_object(
         {
             "amount": {"type": "string", "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$"},
@@ -73,7 +88,7 @@ def _money() -> Dict[str, Any]:
     )
 
 
-def _scope() -> Dict[str, Any]:
+def _scope() -> SchemaObject:
     return _closed_object(
         {
             "scope_type": {"enum": ["person", "household"]},
@@ -83,7 +98,7 @@ def _scope() -> Dict[str, Any]:
     )
 
 
-def _scenario_assumption() -> Dict[str, Any]:
+def _scenario_assumption() -> SchemaObject:
     common = {
         "target_ref": _ref(("entity",)),
         "money": _money(),
@@ -96,7 +111,14 @@ def _scenario_assumption() -> Dict[str, Any]:
             **common,
             "change": {"enum": ["add", "replace", "end"]},
         },
-        ("assumption_type", "target_ref", "change", "money", "effective_date", "reason"),
+        (
+            "assumption_type",
+            "target_ref",
+            "change",
+            "money",
+            "effective_date",
+            "reason",
+        ),
     )
     one_off = _closed_object(
         {
@@ -104,7 +126,14 @@ def _scenario_assumption() -> Dict[str, Any]:
             **common,
             "direction": {"enum": ["inflow", "outflow"]},
         },
-        ("assumption_type", "target_ref", "direction", "money", "effective_date", "reason"),
+        (
+            "assumption_type",
+            "target_ref",
+            "direction",
+            "money",
+            "effective_date",
+            "reason",
+        ),
     )
     override = _closed_object(
         {"assumption_type": {"const": "value_override"}, **common},
@@ -113,7 +142,7 @@ def _scenario_assumption() -> Dict[str, Any]:
     return {"oneOf": [recurring, one_off, override]}
 
 
-def _scenario() -> Dict[str, Any]:
+def _scenario() -> SchemaObject:
     return {
         "oneOf": [
             {
@@ -133,7 +162,7 @@ def _scenario() -> Dict[str, Any]:
     }
 
 
-def _actor() -> Dict[str, Any]:
+def _actor() -> SchemaObject:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -147,7 +176,7 @@ def _actor() -> Dict[str, Any]:
     }
 
 
-def _authorization() -> Dict[str, Any]:
+def _authorization() -> SchemaObject:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -160,11 +189,11 @@ def _authorization() -> Dict[str, Any]:
     }
 
 
-def _base_input_properties() -> Dict[str, Any]:
+def _base_input_properties() -> SchemaObject:
     return {"contract_version": {"const": CONTRACT_VERSION}}
 
 
-def _mutation_input(command: str) -> Dict[str, Any]:
+def _mutation_input(command: str) -> SchemaObject:
     properties = _base_input_properties()
     properties.update(
         {
@@ -173,7 +202,6 @@ def _mutation_input(command: str) -> Dict[str, Any]:
             "expected_generation": _uuid7(),
             "actor": _actor(),
             "reason": {"type": "string", "minLength": 1},
-            "authorization": {"oneOf": [_authorization(), {"type": "null"}]},
         }
     )
     required = [
@@ -184,10 +212,11 @@ def _mutation_input(command: str) -> Dict[str, Any]:
         "actor",
         "reason",
     ]
-    if command.startswith("proposal."):
-        properties["proposal_ref"] = {"type": "string", "minLength": 1}
+    if command in {"proposal.confirm", "proposal.correct", "proposal.reject"}:
+        properties["proposal_ref"] = _uuid7()
         required.append("proposal_ref")
     if command in {"proposal.confirm", "proposal.correct"}:
+        properties["authorization"] = {"oneOf": [_authorization(), {"type": "null"}]}
         required.append("authorization")
     if command == "source.import":
         properties.update(
@@ -217,7 +246,13 @@ def _mutation_input(command: str) -> Dict[str, Any]:
                                 ("category", "rule_version", "explanation"),
                             ),
                         },
-                        ("source_id", "record_id", "booking_date", "money", "description"),
+                        (
+                            "source_id",
+                            "record_id",
+                            "booking_date",
+                            "money",
+                            "description",
+                        ),
                     ),
                 },
             }
@@ -226,39 +261,85 @@ def _mutation_input(command: str) -> Dict[str, Any]:
     if command == "proposal.submit":
         properties["proposal"] = _closed_object(
             {
-                "candidate_ref": {"type": "string", "minLength": 1},
-                "proposal_type": {"type": "string", "minLength": 1},
-                "proposed_assertion": _closed_object(
+                "proposal_type": {"const": "assertion"},
+                "producer": _closed_object(
                     {
-                        "subject_ref": _ref(("entity",)),
-                        "predicate": {"type": "string", "minLength": 1},
-                        "object_value": _closed_object(
-                            {
-                                "value_type": {"type": "string"},
-                                "value": {},
-                            },
-                            ("value_type", "value"),
+                        "producer_type": {"enum": ["agent", "rule_module"]},
+                        "producer_id": {"type": "string", "minLength": 1},
+                        "producer_version": {"type": "string", "minLength": 1},
+                    },
+                    ("producer_type", "producer_id", "producer_version"),
+                ),
+                "proposed_assertion": {
+                    **_closed_object(
+                        {
+                            "subject_ref": _ref(("entity",)),
+                            "predicate": {"type": "string", "minLength": 1},
+                            "object_ref": _ref(("entity",)),
+                            "object_value": _closed_object(
+                                {
+                                    "value_type": {"type": "string", "minLength": 1},
+                                    "value": {},
+                                },
+                                ("value_type", "value"),
+                            ),
+                            "valid_time": _closed_object(
+                                {
+                                    "start": {"type": "string", "format": "date"},
+                                    "end_exclusive": {
+                                        "type": ["string", "null"],
+                                        "format": "date",
+                                    },
+                                },
+                                ("start", "end_exclusive"),
+                            ),
+                            "knowledge_type": {"const": "inferred"},
+                            "module_data": {"type": "object"},
+                        },
+                        (
+                            "subject_ref",
+                            "predicate",
+                            "valid_time",
+                            "knowledge_type",
+                            "module_data",
                         ),
-                        "valid_time": _closed_object(
+                    ),
+                    "oneOf": [
+                        {
+                            "required": ["object_ref"],
+                            "not": {"required": ["object_value"]},
+                        },
+                        {
+                            "required": ["object_value"],
+                            "not": {"required": ["object_ref"]},
+                        },
+                    ],
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _ref(("evidence",)),
+                },
+                "reason_ref": {"type": "string", "minLength": 1},
+                "detection": {
+                    "oneOf": [
+                        _closed_object(
                             {
-                                "start": {"type": "string", "format": "date"},
-                                "end_exclusive": {
-                                    "type": ["string", "null"],
-                                    "format": "date",
+                                "scheme": {"type": "string", "minLength": 1},
+                                "score": {
+                                    "type": "string",
+                                    "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
                                 },
                             },
-                            ("start", "end_exclusive"),
+                            ("scheme", "score"),
                         ),
-                        "knowledge_type": {"const": "inferred"},
-                    },
-                    ("subject_ref", "predicate", "object_value", "valid_time", "knowledge_type"),
-                ),
-                "evidence_refs": {"type": "array", "items": _ref(("evidence",))},
-                "reason_ref": {"type": "string", "minLength": 1},
+                        {"type": "null"},
+                    ]
+                },
             },
             (
-                "candidate_ref",
                 "proposal_type",
+                "producer",
                 "proposed_assertion",
                 "evidence_refs",
                 "reason_ref",
@@ -266,16 +347,32 @@ def _mutation_input(command: str) -> Dict[str, Any]:
         )
         required.append("proposal")
     if command == "proposal.correct":
-        properties["correction"] = _closed_object(
-            {
-                "object_value": _closed_object(
-                    {"value_type": {"type": "string"}, "value": {}},
-                    ("value_type", "value"),
-                ),
-                "reason": {"type": "string", "minLength": 1},
-            },
-            ("object_value", "reason"),
-        )
+        properties["correction"] = {
+            **_closed_object(
+                {
+                    "object_ref": _ref(("entity",)),
+                    "object_value": _closed_object(
+                        {
+                            "value_type": {"type": "string", "minLength": 1},
+                            "value": {},
+                        },
+                        ("value_type", "value"),
+                    ),
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                ("reason",),
+            ),
+            "oneOf": [
+                {
+                    "required": ["object_ref"],
+                    "not": {"required": ["object_value"]},
+                },
+                {
+                    "required": ["object_value"],
+                    "not": {"required": ["object_ref"]},
+                },
+            ],
+        }
         required.append("correction")
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -287,8 +384,8 @@ def _mutation_input(command: str) -> Dict[str, Any]:
     }
 
 
-def input_schema(command: str) -> Dict[str, Any]:
-    if command not in COMMANDS:
+def input_schema(command: str) -> SchemaObject:
+    if command not in SCHEMA_COMMANDS:
         raise KeyError(command)
     if command in MUTATING_COMMANDS:
         return _mutation_input(command)
@@ -341,7 +438,10 @@ def input_schema(command: str) -> Dict[str, Any]:
                     "oneOf": [
                         _closed_object(
                             {
-                                "currency": {"type": "string", "pattern": r"^[A-Z]{3}$"},
+                                "currency": {
+                                    "type": "string",
+                                    "pattern": r"^[A-Z]{3}$",
+                                },
                                 "allowed_rate_assertion_refs": {
                                     "type": "array",
                                     "items": _ref(("assertion",)),
@@ -382,7 +482,7 @@ def input_schema(command: str) -> Dict[str, Any]:
     }
 
 
-def _result_schema(command: str) -> Dict[str, Any]:
+def _result_schema(command: str) -> SchemaObject:
     uuid7 = _uuid7()
     if command == "context.init":
         names = (
@@ -415,7 +515,11 @@ def _result_schema(command: str) -> Dict[str, Any]:
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["command", "input_schema_ref", "output_schema_ref"],
+                        "required": [
+                            "command",
+                            "input_schema_ref",
+                            "output_schema_ref",
+                        ],
                         "properties": {
                             "command": {"enum": list(COMMANDS)},
                             "input_schema_ref": {"type": "string"},
@@ -479,25 +583,31 @@ def _result_schema(command: str) -> Dict[str, Any]:
         )
     if command == "proposal.submit":
         return _closed_object(
-            {"proposal_ref": _ref(("proposal",)), "status": {"const": "open"}},
-            ("proposal_ref", "status"),
+            {"proposal_id": _uuid7()},
+            ("proposal_id",),
         )
-    if command in {"proposal.confirm", "proposal.correct"}:
+    if command == "proposal.confirm":
         return _closed_object(
             {
-                "proposal_ref": _ref(("proposal",)),
-                "assertion_ref": _ref(("assertion",)),
-                "decision": {"enum": ["confirmed", "corrected"]},
+                "proposal_id": _uuid7(),
+                "assertion_id": _uuid7(),
+                "evidence_id": _uuid7(),
             },
-            ("proposal_ref", "assertion_ref", "decision"),
+            ("proposal_id", "assertion_id", "evidence_id"),
+        )
+    if command == "proposal.correct":
+        return _closed_object(
+            {
+                "proposal_id": _uuid7(),
+                "assertion_id": _uuid7(),
+                "evidence_id": _uuid7(),
+            },
+            ("proposal_id", "assertion_id", "evidence_id"),
         )
     if command == "proposal.reject":
         return _closed_object(
-            {
-                "proposal_ref": _ref(("proposal",)),
-                "decision": {"const": "rejected"},
-            },
-            ("proposal_ref", "decision"),
+            {"proposal_id": _uuid7()},
+            ("proposal_id",),
         )
     if command == "validate":
         return _closed_object(
@@ -621,7 +731,7 @@ def _result_schema(command: str) -> Dict[str, Any]:
     raise KeyError(command)
 
 
-def _diagnostic_schema() -> Dict[str, Any]:
+def _diagnostic_schema() -> SchemaObject:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -648,7 +758,7 @@ def _diagnostic_schema() -> Dict[str, Any]:
     }
 
 
-def _next_action_schema() -> Dict[str, Any]:
+def _next_action_schema() -> SchemaObject:
     return _closed_object(
         {
             "action_id": _uuid7(),
@@ -681,8 +791,8 @@ def _next_action_schema() -> Dict[str, Any]:
     )
 
 
-def output_schema(command: str) -> Dict[str, Any]:
-    if command not in COMMANDS:
+def output_schema(command: str) -> SchemaObject:
+    if command not in SCHEMA_COMMANDS:
         raise KeyError(command)
     nullable_uuid7 = {"type": ["string", "null"], "pattern": UUID7_PATTERN}
     return {
@@ -755,33 +865,41 @@ def output_schema(command: str) -> Dict[str, Any]:
     }
 
 
-def describe_result() -> Dict[str, Any]:
-    return {
-        "supported_contract_versions": [CONTRACT_VERSION],
-        "commands": [
-            {
-                "command": command,
-                "input_schema_ref": schema_ref(command, "request"),
-                "output_schema_ref": schema_ref(command, "response"),
-            }
-            for command in COMMANDS
-        ],
-    }
+def describe_result() -> JsonObject:
+    return model_to_json_object(
+        DescribeResult(
+            supported_contract_versions=(CONTRACT_VERSION,),
+            commands=tuple(
+                CommandDescriptor(
+                    command=command,
+                    input_schema_ref=schema_ref(command, "request"),
+                    output_schema_ref=schema_ref(command, "response"),
+                )
+                for command in COMMANDS
+            ),
+        )
+    )
 
 
-def schema_result(command: str) -> Dict[str, Any]:
-    return {
-        "command": command,
-        "input_schema_ref": schema_ref(command, "request"),
-        "output_schema_ref": schema_ref(command, "response"),
-        "input_schema": input_schema(command),
-        "output_schema": output_schema(command),
-    }
+def schema_result(command: str) -> JsonObject:
+    return model_to_json_object(
+        SchemaResult(
+            command=command,
+            input_schema_ref=schema_ref(command, "request"),
+            output_schema_ref=schema_ref(command, "response"),
+            input_schema=cast(JsonObject, input_schema(command)),
+            output_schema=cast(JsonObject, output_schema(command)),
+        )
+    )
 
 
-def validate_request(command: str, request: Dict[str, Any]) -> None:
-    Draft202012Validator(input_schema(command)).validate(request)
+def validate_request(command: str, request: JsonObject) -> None:
+    Draft202012Validator(
+        input_schema(command), format_checker=FormatChecker()
+    ).validate(request)
 
 
-def validate_response(command: str, response: Dict[str, Any]) -> None:
-    Draft202012Validator(output_schema(command)).validate(response)
+def validate_response(command: str, response: JsonObject) -> None:
+    Draft202012Validator(
+        output_schema(command), format_checker=FormatChecker()
+    ).validate(response)

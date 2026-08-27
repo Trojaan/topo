@@ -6,13 +6,17 @@ build-backend = "hatchling.build"
 name = "topo-context-engine"
 version = "0.1.0"
 description = "Local-first financial context engine"
-requires-python = ">=3.9"
-dependencies = ["jsonschema>=4.23,<5"]
+requires-python = ">=3.12,<4"
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "pydantic>=2.11,<3",
+]
 
 [dependency-groups]
 dev = [
   "mypy>=1.11,<2",
   "pytest>=8,<9",
+  "ruff>=0.12,<1",
   "types-jsonschema>=4.23,<5",
 ]
 
@@ -26,7 +30,13 @@ packages = ["src/topo"]
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.12"
 strict = true
-packages = ["topo"]
+files = ["src", "tests"]
 mypy_path = "src"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["B", "I", "UP"]

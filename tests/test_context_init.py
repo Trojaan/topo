@@ -3,13 +3,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, cast
 
+import pytest
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+from pydantic import ValidationError as PydanticValidationError
 
+from topo.contracts import input_schema, validate_request
+from topo.engine import EngineCore
+from topo.models import Actor, ContextInitRequest, JsonObject
+from topo.storage import PackageCommit, StoredPackageSnapshot
 
 PROJECT_ROOT = Path(__file__).parents[1]
 UUID7 = re.compile(
@@ -17,7 +26,29 @@ UUID7 = re.compile(
 )
 
 
-def run_topo(*args: str, request: dict | None = None) -> subprocess.CompletedProcess[str]:
+class MemoryStorage:
+    def __init__(self) -> None:
+        self.snapshot: StoredPackageSnapshot | None = None
+
+    def load(self) -> StoredPackageSnapshot | None:
+        return self.snapshot
+
+    def commit(
+        self, publication: PackageCommit, *, expected_generation: str | None
+    ) -> None:
+        assert expected_generation is None
+        if self.snapshot is not None:
+            raise FileExistsError
+        self.snapshot = StoredPackageSnapshot(
+            current_generation=publication.generation_id,
+            generation_files=publication.generation_files,
+            journal=publication.journal,
+        )
+
+
+def run_topo(
+    *args: str, request: dict[str, Any] | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
     return subprocess.run(
@@ -31,7 +62,9 @@ def run_topo(*args: str, request: dict | None = None) -> subprocess.CompletedPro
     )
 
 
-def run_topo_exact(*args: str, request: dict | None = None) -> subprocess.CompletedProcess[str]:
+def run_topo_exact(
+    *args: str, request: dict[str, Any] | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
     return subprocess.run(
@@ -45,8 +78,8 @@ def run_topo_exact(*args: str, request: dict | None = None) -> subprocess.Comple
     )
 
 
-def read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def read_json(path: Path) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None:
@@ -85,7 +118,9 @@ def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None
         "household",
         "person",
     ]
-    assert entities["records"] == sorted(entities["records"], key=lambda record: record["id"])
+    assert entities["records"] == sorted(
+        entities["records"], key=lambda record: record["id"]
+    )
 
     assertions = read_json(generation / "assertions.json")
     memberships = [
@@ -109,11 +144,16 @@ def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None
         payload = (generation / filename).read_bytes()
         assert expected_checksum == f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
-    assert read_json(package / "history" / "journal.json")["entries"][0]["operation"] == "context.init"
+    assert (
+        read_json(package / "history" / "journal.json")["entries"][0]["operation"]
+        == "context.init"
+    )
     assert list((package / "staging").iterdir()) == []
 
 
-def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Path) -> None:
+def test_user_can_discover_commands_and_schema_validated_responses(
+    tmp_path: Path,
+) -> None:
     request = {"contract_version": "topo.cli/0.1"}
 
     described = run_topo("contract", "describe", request=request)
@@ -128,7 +168,7 @@ def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Pat
         "contract.schema",
     ]
 
-    schemas: dict[str, dict] = {}
+    schemas: dict[str, dict[str, Any]] = {}
     discovered_commands = [
         descriptor["command"] for descriptor in discovery["result"]["commands"]
     ]
@@ -147,8 +187,12 @@ def test_user_can_discover_commands_and_schema_validated_responses(tmp_path: Pat
     Draft202012Validator(schemas["contract.describe"]).validate(discovery)
 
     package = tmp_path / "schema-checked.topo"
-    initialized = run_topo("context", "init", "--package", str(package), request=request)
-    Draft202012Validator(schemas["context.init"]).validate(json.loads(initialized.stdout))
+    initialized = run_topo(
+        "context", "init", "--package", str(package), request=request
+    )
+    Draft202012Validator(schemas["context.init"]).validate(
+        json.loads(initialized.stdout)
+    )
 
     schema_response = json.loads(
         run_topo("contract", "schema", "contract.schema", request=request).stdout
@@ -218,7 +262,7 @@ def test_reinitialization_never_replaces_a_published_generation(tmp_path: Path) 
     } == original
 
 
-def test_normative_cli_form_exposes_every_v01_command_schema() -> None:
+def test_contract_discovery_only_exposes_executable_commands() -> None:
     request = {"contract_version": "topo.cli/0.1"}
 
     described = run_topo_exact("contract", "describe", "--json", request=request)
@@ -231,77 +275,61 @@ def test_normative_cli_form_exposes_every_v01_command_schema() -> None:
         "context.init",
         "contract.describe",
         "contract.schema",
-        "source.import",
-        "discover.run",
         "proposal.submit",
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
-        "validate",
-        "analyze.run",
-        "explain",
-        "workflow.next",
     }
 
-    completed = run_topo_exact(
-        "contract", "schema", "proposal.confirm", "--json", request=request
+    unavailable = run_topo_exact(
+        "contract", "schema", "analyze.run", "--json", request=request
     )
-    assert completed.returncode == 0, completed.stderr
-    input_schema = json.loads(completed.stdout)["result"]["input_schema"]
-    assert {
-        "contract_version",
-        "operation_id",
-        "context_id",
-        "expected_generation",
-        "actor",
-        "reason",
-        "authorization",
-        "proposal_ref",
-    } <= set(input_schema["required"])
-
-    source_schema = json.loads(
-        run_topo_exact(
-            "contract", "schema", "source.import", "--json", request=request
-        ).stdout
-    )["result"]["input_schema"]
-    assert {"adapter", "records"} <= set(source_schema["required"])
-
-    analysis_schema = json.loads(
-        run_topo_exact(
-            "contract", "schema", "analyze.run", "--json", request=request
-        ).stdout
-    )["result"]["input_schema"]
-    assert {
-        "analysis_id",
-        "analysis_contract_version",
-        "analysis_scope",
-        "as_of_date",
-        "period",
-        "scenario",
-    } <= set(analysis_schema["required"])
-    assert "reporting_currency" in analysis_schema["properties"]
-    assert "reporting_currency" not in analysis_schema["required"]
-    scenario_object = analysis_schema["properties"]["scenario"]["oneOf"][0]
-    assert scenario_object["additionalProperties"] is False
-
-    analysis_output = json.loads(
-        run_topo_exact(
-            "contract", "schema", "analyze.run", "--json", request=request
-        ).stdout
-    )["result"]["output_schema"]
-    result_schema = analysis_output["allOf"][0]["then"]["properties"]["result"]
-    component_schema = result_schema["properties"]["components"]["items"]
-    assert {
-        "assumptions",
-        "calculation_steps",
-        "rounding",
-        "requirements",
-        "blockers",
-        "warnings",
-    } <= set(component_schema["required"])
+    assert unavailable.returncode != 0
+    assert unavailable.stdout == ""
 
 
-def test_init_normalizes_file_input_and_replays_the_same_operation(tmp_path: Path) -> None:
+def test_contract_validation_enforces_date_formats() -> None:
+    request: JsonObject = {
+        "contract_version": "topo.cli/0.1",
+        "analysis_id": "analysis.net_worth",
+        "analysis_contract_version": "0.1",
+        "context_id": "0198f1a0-0000-7000-8000-000000000001",
+        "analysis_scope": {
+            "scope_type": "household",
+            "entity_id": "0198f1a0-0000-7000-8000-000000000002",
+        },
+        "as_of_date": "geen-datum",
+        "period": None,
+        "scenario": None,
+    }
+
+    Draft202012Validator(input_schema("analyze.run")).validate(request)
+    with pytest.raises(ValidationError):
+        validate_request("analyze.run", request)
+
+
+def test_context_init_pydantic_and_json_schema_validation_stay_in_parity() -> None:
+    request: JsonObject = {
+        "contract_version": "topo.cli/0.1",
+        "package": "/tmp/noor.topo",
+        "operation_id": "0198f1a0-0000-7000-8000-000000000001",
+        "expected_generation": None,
+        "actor": {"actor_type": "human", "actor_id": "local-user"},
+        "reason": "Initialize context",
+    }
+    validate_request("context.init", request)
+    ContextInitRequest.model_validate(request, strict=True)
+
+    invalid = {**request, "unexpected": True}
+    with pytest.raises(ValidationError):
+        validate_request("context.init", invalid)
+    with pytest.raises(PydanticValidationError):
+        ContextInitRequest.model_validate(invalid, strict=True)
+
+
+def test_init_normalizes_file_input_and_replays_the_same_operation(
+    tmp_path: Path,
+) -> None:
     package = tmp_path / "replayable.topo"
     request_path = tmp_path / "init-request.json"
     operation_id = "0198f1a0-0000-7000-8000-000000000001"
@@ -350,3 +378,76 @@ def test_init_normalizes_file_input_and_replays_the_same_operation(tmp_path: Pat
     assert second_response["generation_before"] == first_response["generation_after"]
     assert second_response["generation_after"] == first_response["generation_after"]
     assert (package / "CURRENT").read_bytes() == current_before
+
+
+def test_engine_core_uses_the_storage_seam_for_publish_and_replay() -> None:
+    storage = MemoryStorage()
+    ids = iter(f"0198f1a0-0000-7000-8000-{suffix:012d}" for suffix in range(10, 17))
+    engine = EngineCore(
+        storage,
+        clock=lambda: datetime(2026, 8, 27, 12, tzinfo=UTC),
+        id_factory=lambda: next(ids),
+    )
+    request = ContextInitRequest(
+        contract_version="topo.cli/0.1",
+        package="memory.topo",
+        operation_id="0198f1a0-0000-7000-8000-000000000001",
+        expected_generation=None,
+        actor=Actor(actor_type="human", actor_id="local-user"),
+        reason="Initialize memory context",
+    )
+
+    first = engine.initialize(request)
+    second = engine.initialize(request)
+
+    assert first.replayed is False
+    assert second.replayed is True
+    assert second.result == first.result
+    assert storage.snapshot is not None
+
+
+def test_corrupted_replay_returns_package_integrity_diagnostic(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "corrupted.topo"
+    operation_id = "0198f1a0-0000-7000-8000-000000000001"
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": operation_id,
+        "expected_generation": None,
+        "actor": {"actor_type": "human", "actor_id": "local-user"},
+        "reason": "Initialize context",
+    }
+    initialized = run_topo(
+        "context", "init", "--package", str(package), request=request
+    )
+    assert initialized.returncode == 0
+
+    generation_id = (package / "CURRENT").read_text(encoding="utf-8").strip()
+    generation = package / "generations" / generation_id
+    entities_path = generation / "entities.json"
+    entities = read_json(entities_path)
+    entities["records"] = [
+        record for record in entities["records"] if record["entity_type"] != "person"
+    ]
+    entities_payload = (
+        json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    entities_path.write_bytes(entities_payload)
+    manifest_path = generation / "manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["files"]["entities.json"] = (
+        "sha256:" + hashlib.sha256(entities_payload).hexdigest()
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    replayed = run_topo("context", "init", "--package", str(package), request=request)
+
+    assert replayed.returncode == 2
+    response = json.loads(replayed.stdout)
+    assert response["diagnostics"][0]["code"] == "PACKAGE_INTEGRITY_FAILED"
+    assert response["diagnostics"][0]["effect"] == "none"
+    assert response["diagnostics"][0]["params"]["reason"]

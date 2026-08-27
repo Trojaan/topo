@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+from datetime import date
+from typing import Annotated, Literal, cast
+
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    model_validator,
+)
+
+from topo.identifiers import UUID7_PATTERN
+
+JsonObject = dict[str, JsonValue]
+Outcome = Literal[
+    "succeeded",
+    "no_change",
+    "rejected",
+    "conflict",
+    "requires_authorization",
+]
+UUID7 = Annotated[str, StringConstraints(pattern=UUID7_PATTERN, strict=True)]
+NonEmptyString = Annotated[str, StringConstraints(min_length=1, strict=True)]
+Checksum = Annotated[
+    str,
+    StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$", strict=True),
+]
+Currency = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$", strict=True)]
+DecimalString = Annotated[
+    str,
+    StringConstraints(pattern=r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$", strict=True),
+]
+
+
+class TopoModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class Actor(TopoModel):
+    actor_type: Literal["human", "agent", "rule_module", "source_adapter", "system"]
+    actor_id: NonEmptyString
+
+
+class Ref(TopoModel):
+    ref_type: NonEmptyString
+    id: UUID7
+
+
+class Money(TopoModel):
+    amount: DecimalString
+    currency: Currency
+
+
+class ValidTime(TopoModel):
+    start: date
+    end_exclusive: date | None
+
+
+class EntityRecord(TopoModel):
+    id: UUID7
+    entity_type: Literal["context", "person", "household"]
+    module_id: Literal["topo.core", "domain.parties"]
+    created_at: AwareDatetime
+
+
+class AssertionRecord(TopoModel):
+    id: UUID7
+    subject_ref: Ref
+    predicate: NonEmptyString
+    object_ref: Ref | None = None
+    object_value: ObjectValue | None = None
+    valid_time: ValidTime
+    recorded_at: AwareDatetime
+    knowledge_type: Literal[
+        "observed", "user_provided", "inferred", "calculated", "assumed", "projected"
+    ]
+    verification_status: Literal["confirmed"]
+    provenance: tuple[Ref, ...] = Field(min_length=1)
+    supersedes: UUID7 | None
+    module_data: JsonObject
+
+    @model_validator(mode="after")
+    def exactly_one_object(self) -> AssertionRecord:
+        if (self.object_ref is None) == (self.object_value is None):
+            raise ValueError("exactly one of object_ref and object_value is required")
+        return self
+
+
+class EvidenceRecord(TopoModel):
+    id: UUID7
+    evidence_type: Literal["user_statement"]
+    recorded_at: AwareDatetime
+    statement_type: Literal[
+        "context_initialization", "proposal_confirmation", "proposal_correction"
+    ]
+    statement: JsonObject | None = None
+
+
+class ObjectValue(TopoModel):
+    value_type: NonEmptyString
+    value: JsonValue
+
+
+class ProposedAssertion(TopoModel):
+    subject_ref: Ref
+    predicate: NonEmptyString
+    object_ref: Ref | None = None
+    object_value: ObjectValue | None = None
+    valid_time: ValidTime
+    knowledge_type: Literal["inferred"]
+    module_data: JsonObject
+
+    @model_validator(mode="after")
+    def exactly_one_object(self) -> ProposedAssertion:
+        if (self.object_ref is None) == (self.object_value is None):
+            raise ValueError("exactly one of object_ref and object_value is required")
+        return self
+
+
+class Producer(TopoModel):
+    producer_type: Literal["agent", "rule_module"]
+    producer_id: NonEmptyString
+    producer_version: NonEmptyString
+
+
+class Detection(TopoModel):
+    scheme: NonEmptyString
+    score: DecimalString
+
+
+class ProposalDecision(TopoModel):
+    outcome: Literal["confirmed", "corrected", "rejected"]
+    actor: Actor
+    decided_at: AwareDatetime
+    mutation_id: UUID7
+    assertion_id: UUID7 | None
+
+
+class ProposalRecord(TopoModel):
+    id: UUID7
+    proposal_type: Literal["assertion"]
+    producer: Producer
+    proposed_assertion: ProposedAssertion
+    evidence_refs: tuple[Ref, ...] = Field(min_length=1)
+    reason_ref: NonEmptyString
+    detection: Detection | None = None
+    status: Literal["open", "confirmed", "corrected", "rejected", "superseded"]
+    created_at: AwareDatetime
+    decision: ProposalDecision | None
+
+
+class CanonicalCollection[RecordT: TopoModel](TopoModel):
+    schema_version: Literal["topo.context/0.1"]
+    records: tuple[RecordT, ...]
+
+
+class ModulePin(TopoModel):
+    module_id: NonEmptyString
+    module_version: NonEmptyString
+    checksum: Checksum
+
+
+class Manifest(TopoModel):
+    schema_version: Literal["topo.manifest/0.1"]
+    context_id: UUID7
+    generation_id: UUID7
+    based_on: UUID7 | None
+    package_version: Literal["0.1"]
+    context_schema_version: Literal["topo.context/0.1"]
+    mutation_id: UUID7
+    recorded_at: AwareDatetime
+    modules: tuple[ModulePin, ...] = Field(min_length=1)
+    active_rule_packages: tuple[()] = ()
+    files: dict[str, Checksum]
+
+
+class JournalEntry(TopoModel):
+    operation_id: UUID7
+    mutation_id: UUID7
+    operation: Literal[
+        "context.init",
+        "proposal.submit",
+        "proposal.confirm",
+        "proposal.correct",
+        "proposal.reject",
+    ]
+    actor: Actor
+    reason: NonEmptyString
+    generation_before: UUID7 | None
+    generation_after: UUID7
+    recorded_at: AwareDatetime
+    result: JsonObject
+
+
+class Journal(TopoModel):
+    schema_version: Literal["topo.journal/0.1"]
+    entries: tuple[JournalEntry, ...] = Field(min_length=1)
+
+
+class ContextInitRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    package: NonEmptyString
+    operation_id: UUID7
+    expected_generation: None
+    actor: Actor
+    reason: NonEmptyString
+
+
+class ContextInitResult(TopoModel):
+    context_id: UUID7
+    generation_id: UUID7
+    mutation_id: UUID7
+    person_id: UUID7
+    household_id: UUID7
+    membership_assertion_id: UUID7
+
+
+class InitializationOutcome(TopoModel):
+    result: ContextInitResult
+    replayed: bool
+
+
+class Authorization(TopoModel):
+    preview_ref: NonEmptyString
+    authorized_by: Actor
+    authorized_at: AwareDatetime
+
+
+class MutationRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    operation_id: UUID7
+    context_id: UUID7
+    expected_generation: UUID7
+    actor: Actor
+    reason: NonEmptyString
+
+
+class ProposalSubmitRequest(MutationRequest):
+    proposal: ProposedProposal
+
+
+class ProposedProposal(TopoModel):
+    proposal_type: Literal["assertion"]
+    producer: Producer
+    proposed_assertion: ProposedAssertion
+    evidence_refs: tuple[Ref, ...] = Field(min_length=1)
+    reason_ref: NonEmptyString
+    detection: Detection | None = None
+
+
+class ProposalDecisionRequest(MutationRequest):
+    proposal_ref: UUID7
+
+
+class ProposalConfirmRequest(ProposalDecisionRequest):
+    authorization: Authorization | None
+
+
+class Correction(TopoModel):
+    object_ref: Ref | None = None
+    object_value: ObjectValue | None = None
+    reason: NonEmptyString
+
+    @model_validator(mode="after")
+    def exactly_one_object(self) -> Correction:
+        if (self.object_ref is None) == (self.object_value is None):
+            raise ValueError("exactly one of object_ref and object_value is required")
+        return self
+
+
+class ProposalCorrectRequest(ProposalDecisionRequest):
+    authorization: Authorization | None
+    correction: Correction
+
+
+class ProposalRejectRequest(ProposalDecisionRequest):
+    pass
+
+
+class MutationOutcome(TopoModel):
+    context_id: UUID7
+    generation_before: UUID7
+    generation_after: UUID7
+    outcome: Outcome
+    result: JsonObject
+    replayed: bool = False
+
+
+class CommandDescriptor(TopoModel):
+    command: NonEmptyString
+    input_schema_ref: NonEmptyString
+    output_schema_ref: NonEmptyString
+
+
+class DescribeResult(TopoModel):
+    supported_contract_versions: tuple[Literal["topo.cli/0.1"], ...]
+    commands: tuple[CommandDescriptor, ...]
+
+
+class SchemaResult(TopoModel):
+    command: NonEmptyString
+    input_schema_ref: NonEmptyString
+    output_schema_ref: NonEmptyString
+    input_schema: JsonObject
+    output_schema: JsonObject
+
+
+class Diagnostic(TopoModel):
+    code: NonEmptyString
+    message_key: NonEmptyString
+    severity: Literal["info", "warning", "error"]
+    path: str
+    params: JsonObject
+    retryable: bool
+    effect: Literal["none"] = "none"
+    related_refs: tuple[Ref, ...] = ()
+
+
+class Trace(TopoModel):
+    normalized_request: JsonObject
+    refs: tuple[Ref, ...] = ()
+
+
+class ResponseEnvelope(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    command: NonEmptyString
+    operation_id: UUID7 | None
+    context_id: UUID7 | None
+    generation_before: UUID7 | None
+    generation_after: UUID7 | None
+    outcome: Outcome
+    result: JsonObject
+    diagnostics: tuple[Diagnostic, ...] = ()
+    next_actions: tuple[JsonObject, ...] = ()
+    trace: Trace
+
+
+def model_to_json_object(model: BaseModel) -> JsonObject:
+    return cast(JsonObject, model.model_dump(mode="json"))
