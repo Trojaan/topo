@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import cast
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -491,6 +492,7 @@ def _validate_snapshot(
         raise PackageIntegrityError("CURRENT does not match the manifest generation")
 
     entity_ids = {record.id for record in entities.records}
+    entity_by_id = {record.id: record for record in entities.records}
     evidence_ids = {record.id for record in evidence.records}
     evidence_by_id = {record.id: record for record in evidence.records}
     proposal_ids = {record.id for record in proposals.records}
@@ -545,9 +547,12 @@ def _validate_snapshot(
     )
 
     source_records: dict[str, bytes] = {}
+    source_imports: dict[str, SourceImportRecord] = {}
+    source_evidence_records: list[SourceRecordEvidenceRecord] = []
     for record in evidence.records:
         if not isinstance(record, SourceRecordEvidenceRecord):
             continue
+        source_evidence_records.append(record)
         expected_path = f"evidence/records/{record.id}.json"
         if record.record_path != expected_path:
             raise PackageIntegrityError(
@@ -566,6 +571,7 @@ def _validate_snapshot(
         ):
             raise PackageIntegrityError("source evidence identity does not match")
         source_records[record.record_path] = payload
+        source_imports[record.id] = source_record
         if record.supersedes is not None:
             evidence_predecessor = evidence_by_id.get(record.supersedes)
             if (
@@ -596,6 +602,133 @@ def _validate_snapshot(
         },
         description="source evidence successor",
     )
+
+    source_groups: dict[tuple[str, str, str], list[SourceRecordEvidenceRecord]] = {}
+    for record in source_evidence_records:
+        identity = (
+            record.source.adapter_id,
+            record.source.source_id,
+            record.source.record_id,
+        )
+        source_groups.setdefault(identity, []).append(record)
+
+    for source_lineage in source_groups.values():
+        if sum(record.supersedes is None for record in source_lineage) != 1:
+            raise PackageIntegrityError("source identity must have one lineage root")
+        transaction_ids: set[str] = set()
+        projections: dict[str, dict[str, AssertionRecord]] = {}
+        for record in source_lineage:
+            source_import = source_imports[record.id]
+            source_observations = tuple(
+                assertion
+                for assertion in assertions.records
+                if assertion.knowledge_type == "observed"
+                and any(ref.id == record.id for ref in assertion.provenance)
+            )
+            if any(
+                len(assertion.provenance) != 1
+                or assertion.provenance[0].ref_type != "evidence"
+                for assertion in source_observations
+            ):
+                raise PackageIntegrityError(
+                    "source observations must have literal provenance"
+                )
+            projected = source_observations
+            by_predicate = {assertion.predicate: assertion for assertion in projected}
+            expected_values = {
+                "domain.accounts/posting": ("source_account", source_import.source_id),
+                "domain.cashflow/booking_date": (
+                    "date",
+                    source_import.booking_date.isoformat(),
+                ),
+                "domain.cashflow/money": (
+                    "money",
+                    source_import.money.model_dump(mode="json"),
+                ),
+                "domain.cashflow/description": ("text", source_import.description),
+            }
+            if len(projected) != 4 or set(by_predicate) != set(expected_values):
+                raise PackageIntegrityError(
+                    "source evidence must have four literal assertions"
+                )
+            transaction_id = projected[0].subject_ref.id
+            if entity_by_id[transaction_id].entity_type != "transaction":
+                raise PackageIntegrityError(
+                    "source evidence subject must be a transaction"
+                )
+            transaction_ids.add(transaction_id)
+            expected_end = source_import.booking_date + timedelta(days=1)
+            for predicate, (value_type, value) in expected_values.items():
+                assertion = by_predicate[predicate]
+                if (
+                    assertion.subject_ref.id != transaction_id
+                    or assertion.object_value is None
+                    or assertion.object_value.value_type != value_type
+                    or assertion.object_value.value != value
+                    or assertion.valid_time.start != source_import.booking_date
+                    or assertion.valid_time.end_exclusive != expected_end
+                    or assertion.recorded_at != record.recorded_at
+                    or assertion.module_data
+                ):
+                    raise PackageIntegrityError(
+                        "source assertion does not match its literal record"
+                    )
+            projections[record.id] = by_predicate
+
+            classification_proposals = tuple(
+                proposal
+                for proposal in proposals.records
+                if proposal.producer.producer_type == "source_adapter"
+                and proposal.proposed_assertion.predicate
+                == "domain.cashflow/source_classification"
+                and any(ref.id == record.id for ref in proposal.evidence_refs)
+            )
+            classification = source_import.source_classification
+            if classification is None:
+                if classification_proposals:
+                    raise PackageIntegrityError(
+                        "source classification has no literal basis"
+                    )
+            elif len(classification_proposals) != 1:
+                raise PackageIntegrityError(
+                    "source classification must remain one proposal"
+                )
+            else:
+                proposal = classification_proposals[0]
+                proposed = proposal.proposed_assertion
+                if (
+                    proposal.producer.producer_id != record.source.adapter_id
+                    or proposal.producer.producer_version
+                    != record.source.adapter_version
+                    or len(proposal.evidence_refs) != 1
+                    or proposed.subject_ref.id != transaction_id
+                    or proposed.object_value is None
+                    or proposed.object_value.value_type != "source_classification"
+                    or proposed.object_value.value
+                    != classification.model_dump(mode="json")
+                    or proposed.valid_time.start != source_import.booking_date
+                    or proposed.valid_time.end_exclusive != expected_end
+                    or proposed.module_data
+                ):
+                    raise PackageIntegrityError(
+                        "source classification proposal does not match its record"
+                    )
+
+        if len(transaction_ids) != 1:
+            raise PackageIntegrityError(
+                "source identity must resolve to one transaction"
+            )
+        for record in source_lineage:
+            if record.supersedes is None:
+                continue
+            predecessor_projection = projections[record.supersedes]
+            if any(
+                assertion.supersedes != predecessor_projection[predicate].id
+                for predicate, assertion in projections[record.id].items()
+            ):
+                raise PackageIntegrityError(
+                    "source assertion lineage does not match evidence lineage"
+                )
 
     for proposal in proposals.records:
         if proposal.proposed_assertion.subject_ref.ref_type != "entity":

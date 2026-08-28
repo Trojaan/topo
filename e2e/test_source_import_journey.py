@@ -432,7 +432,16 @@ def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> N
     assert "records" not in authorized_request
 
 
-@pytest.mark.parametrize("invalid_lineage", ["assertion_self", "evidence_type"])
+@pytest.mark.parametrize(
+    "invalid_lineage",
+    [
+        "assertion_self",
+        "evidence_type",
+        "literal_mismatch",
+        "duplicate_root",
+        "classification_mismatch",
+    ],
+)
 def test_invalid_source_successor_lineage_blocks_package_reads(
     tmp_path: Path, invalid_lineage: str
 ) -> None:
@@ -453,12 +462,23 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
                 "booking_date": "2026-07-25",
                 "money": {"amount": "10.00", "currency": "EUR"},
                 "description": "TEST",
+                **(
+                    {
+                        "source_classification": {
+                            "category": "Expense",
+                            "rule_version": "rules-1",
+                            "explanation": "Source rule",
+                        }
+                    }
+                    if invalid_lineage == "classification_mismatch"
+                    else {}
+                ),
             }
         ],
     )
     _, authorized_request = import_with_authorization(package, request)
     _, generation = current_generation(package)
-    if invalid_lineage == "assertion_self":
+    if invalid_lineage in {"assertion_self", "literal_mismatch"}:
         assertions = json.loads(
             (generation / "assertions.json").read_text(encoding="utf-8")
         )
@@ -467,9 +487,12 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
             for item in assertions["records"]
             if item["predicate"] == "domain.cashflow/booking_date"
         )
-        transaction_assertion["supersedes"] = transaction_assertion["id"]
+        if invalid_lineage == "assertion_self":
+            transaction_assertion["supersedes"] = transaction_assertion["id"]
+        else:
+            transaction_assertion["object_value"]["value"] = "2026-07-26"
         rewrite_collection(generation, "assertions.json", assertions)
-    else:
+    elif invalid_lineage == "evidence_type":
         evidence = json.loads(
             (generation / "evidence.json").read_text(encoding="utf-8")
         )
@@ -485,6 +508,58 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
         )
         source_evidence["supersedes"] = user_evidence["id"]
         rewrite_collection(generation, "evidence.json", evidence)
+    elif invalid_lineage == "duplicate_root":
+        evidence_path = generation / "evidence.json"
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        source_evidence = next(
+            item
+            for item in evidence["records"]
+            if item["evidence_type"] == "source_record"
+        )
+        duplicate_id = "0198f1a0-0000-7000-8000-000000000199"
+        duplicate_record_path = f"evidence/records/{duplicate_id}.json"
+        duplicate_evidence = {
+            **source_evidence,
+            "id": duplicate_id,
+            "record_path": duplicate_record_path,
+            "supersedes": None,
+        }
+        evidence["records"].append(duplicate_evidence)
+        evidence["records"].sort(key=lambda item: item["id"])
+        rewrite_collection(generation, "evidence.json", evidence)
+        original_record = package / source_evidence["record_path"]
+        (package / duplicate_record_path).write_bytes(original_record.read_bytes())
+        generation_id = generation.name
+        inventory_directory = package / "history" / "evidence-inventory"
+        inventory_path = next(
+            path
+            for path in inventory_directory.iterdir()
+            if path.name.startswith(generation_id + "-")
+        )
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory["paths"].append(duplicate_record_path)
+        inventory["paths"].sort()
+        inventory_payload = (
+            json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        inventory_path.unlink()
+        checksum = hashlib.sha256(inventory_payload).hexdigest()
+        (inventory_directory / f"{generation_id}-{checksum}.json").write_bytes(
+            inventory_payload
+        )
+    else:
+        proposals = json.loads(
+            (generation / "proposals.json").read_text(encoding="utf-8")
+        )
+        source_proposal = next(
+            item
+            for item in proposals["records"]
+            if item["producer"]["producer_type"] == "source_adapter"
+        )
+        source_proposal["proposed_assertion"]["object_value"]["value"]["category"] = (
+            "Income"
+        )
+        rewrite_collection(generation, "proposals.json", proposals)
 
     rejected = run_topo(
         "source",

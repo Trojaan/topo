@@ -144,6 +144,20 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     } == current_before
 
 
+def test_pre_inventory_package_is_bootstrapped_before_its_next_mutation(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "legacy.topo"
+    initialized = initialize(package)
+    shutil.rmtree(package / "history" / "evidence-inventory")
+
+    submitted = submit_salary_proposal(package, initialized)
+
+    assert submitted["generation_after"] != initialized["generation_after"]
+    inventories = tuple((package / "history" / "evidence-inventory").iterdir())
+    assert len(inventories) == 2
+
+
 def test_manifest_tampering_keeps_raw_read_available_and_blocks_mutation(
     tmp_path: Path,
 ) -> None:

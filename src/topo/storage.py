@@ -168,6 +168,30 @@ def _evidence_inventory_filename(generation_id: str, payload: bytes) -> str:
     return f"{generation_id}-{checksum}.json"
 
 
+def _bootstrap_legacy_evidence_inventory(
+    package: Path, published_generation_ids: set[str]
+) -> bool:
+    inventory_directory = package / "history" / "evidence-inventory"
+    if inventory_directory.exists() or inventory_directory.is_symlink():
+        return inventory_directory.is_dir() and not inventory_directory.is_symlink()
+    evidence_records = package / "evidence" / "records"
+    if evidence_records.is_symlink() or not evidence_records.is_dir():
+        return False
+    if any(evidence_records.iterdir()):
+        return False
+    inventory_directory.mkdir(mode=0o700)
+    empty_inventory = b'{"paths":[]}\n'
+    for generation_id in published_generation_ids:
+        _write_durable(
+            inventory_directory
+            / _evidence_inventory_filename(generation_id, empty_inventory),
+            empty_inventory,
+        )
+    _sync_directory(inventory_directory)
+    _sync_directory(inventory_directory.parent)
+    return True
+
+
 def _remove_artifact(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -346,7 +370,7 @@ class FileSystemStorageAdapter:
 
         try:
             inventory_directory = history / "evidence-inventory"
-            if inventory_directory.is_symlink() or not inventory_directory.is_dir():
+            if not _bootstrap_legacy_evidence_inventory(self._package, published):
                 return False
             for artifact in inventory_directory.iterdir():
                 if not any(

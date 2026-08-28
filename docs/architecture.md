@@ -41,3 +41,5 @@ Every mutation loads and validates the current generation, applies the complete
 change in memory, validates the proposed publication, writes a new immutable
 generation, durably updates the journal, and atomically switches `CURRENT`.
 Operation IDs make retries safe. Expected-generation checks prevent stale writers.
+Packages created before opaque evidence inventories are bootstrapped only when
+their external evidence directory is empty; non-empty ambiguous state fails closed.
