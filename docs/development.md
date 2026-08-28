@@ -40,4 +40,11 @@ For an isolated manual run, create packages below a temporary directory:
 uv run topo context init --package /tmp/example.topo --json
 ```
 
+After initialization, an adapter can submit the versioned `source.import` JSON
+contract through stdin (or `--request`) with:
+
+```bash
+uv run topo source import --package /tmp/example.topo --request /tmp/import.json --json
+```
+
 Never use real financial data in tests or committed fixtures.

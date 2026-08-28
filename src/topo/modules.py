@@ -191,6 +191,12 @@ class ModuleCatalog:
         for constraint in owner.constraints:
             constraint.validate(assertion, existing_assertions, entities)
 
+    def require_pinned_identifiers(
+        self, identifiers: tuple[str, ...], pins: tuple[ModulePin, ...]
+    ) -> None:
+        for identifier in identifiers:
+            self._require_pinned(self.owner_of(identifier), pins)
+
     def _require_pinned(
         self, module: ModuleDescriptor, pins: tuple[ModulePin, ...]
     ) -> None:

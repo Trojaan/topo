@@ -255,6 +255,10 @@ def default_module_catalog() -> ModuleCatalog:
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=(
             "domain.cashflow/monthly_salary",
+            "domain.cashflow/booking_date",
+            "domain.cashflow/money",
+            "domain.cashflow/description",
+            "domain.cashflow/source_classification",
             "domain.cashflow/counterparty",
             "domain.cashflow/transfer_counterpart",
             "domain.cashflow/pattern_evidence",

@@ -49,8 +49,8 @@ def _entity_schema() -> JsonObject:
         "required": ["id", "entity_type", "module_id", "created_at"],
         "properties": {
             "id": _uuid7(),
-            "entity_type": {"enum": ["context", "person", "household"]},
-            "module_id": {"enum": ["topo.core", "domain.parties"]},
+            "entity_type": {"enum": ["context", "person", "household", "transaction"]},
+            "module_id": {"enum": ["topo.core", "domain.parties", "domain.cashflow"]},
             "created_at": {"type": "string", "format": "date-time"},
         },
     }
@@ -131,7 +131,7 @@ def _assertion_schema() -> JsonObject:
 
 
 def _evidence_schema() -> JsonObject:
-    return {
+    user_statement: JsonObject = {
         "type": "object",
         "additionalProperties": False,
         "required": [
@@ -155,6 +155,70 @@ def _evidence_schema() -> JsonObject:
             "statement": {"oneOf": [{"type": "object"}, {"type": "null"}]},
         },
     }
+    source_record: JsonObject = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "id",
+            "evidence_type",
+            "source",
+            "record",
+            "recorded_at",
+            "supersedes",
+        ],
+        "properties": {
+            "id": _uuid7(),
+            "evidence_type": {"const": "source_record"},
+            "source": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "adapter_id",
+                    "adapter_version",
+                    "source_id",
+                    "record_id",
+                    "record_checksum",
+                ],
+                "properties": {
+                    "adapter_id": {"type": "string", "minLength": 1},
+                    "adapter_version": {"type": "string", "minLength": 1},
+                    "source_id": {"type": "string", "minLength": 1},
+                    "record_id": {"type": "string", "minLength": 1},
+                    "record_checksum": {
+                        "type": "string",
+                        "pattern": r"^sha256:[0-9a-f]{64}$",
+                    },
+                },
+            },
+            "record": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["booking_date", "money", "description"],
+                "properties": {
+                    "booking_date": {"type": "string", "format": "date"},
+                    "money": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["amount", "currency"],
+                        "properties": {
+                            "amount": {
+                                "type": "string",
+                                "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
+                            },
+                            "currency": {
+                                "type": "string",
+                                "pattern": r"^[A-Z]{3}$",
+                            },
+                        },
+                    },
+                    "description": {"type": "string"},
+                },
+            },
+            "recorded_at": {"type": "string", "format": "date-time"},
+            "supersedes": {"oneOf": [_uuid7(), {"type": "null"}]},
+        },
+    }
+    return {"oneOf": [user_statement, source_record]}
 
 
 def _proposal_schema() -> JsonObject:
@@ -190,7 +254,9 @@ def _proposal_schema() -> JsonObject:
                 "additionalProperties": False,
                 "required": ["producer_type", "producer_id", "producer_version"],
                 "properties": {
-                    "producer_type": {"enum": ["agent", "rule_module"]},
+                    "producer_type": {
+                        "enum": ["agent", "rule_module", "source_adapter"]
+                    },
                     "producer_id": {"type": "string", "minLength": 1},
                     "producer_version": {"type": "string", "minLength": 1},
                 },
@@ -432,6 +498,7 @@ def _validate_snapshot(
     entity_ids = {record.id for record in entities.records}
     evidence_ids = {record.id for record in evidence.records}
     proposal_ids = {record.id for record in proposals.records}
+    assertion_ids = {record.id for record in assertions.records}
     for assertion in assertions.records:
         if assertion.subject_ref.ref_type != "entity":
             raise PackageIntegrityError("assertion subject has an invalid ref type")
@@ -449,6 +516,19 @@ def _validate_snapshot(
             for ref in assertion.provenance
         ):
             raise PackageIntegrityError("assertion provenance does not resolve")
+        if (
+            assertion.supersedes is not None
+            and assertion.supersedes not in assertion_ids
+        ):
+            raise PackageIntegrityError("superseded assertion does not resolve")
+
+    superseded_evidence_ids = {
+        record.supersedes
+        for record in evidence.records
+        if record.evidence_type == "source_record" and record.supersedes is not None
+    }
+    if not superseded_evidence_ids <= evidence_ids:
+        raise PackageIntegrityError("superseded evidence does not resolve")
 
     for proposal in proposals.records:
         if proposal.proposed_assertion.subject_ref.ref_type != "entity":

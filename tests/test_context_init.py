@@ -276,6 +276,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "context.init",
         "contract.describe",
         "contract.schema",
+        "source.import",
         "proposal.submit",
         "proposal.confirm",
         "proposal.correct",

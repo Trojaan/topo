@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from topo.builtin_modules import default_module_catalog
 from topo.canonical_validation import ValidatedPackage, load_and_validate_generation
@@ -31,13 +31,22 @@ from topo.models import (
     Manifest,
     MutationOutcome,
     MutationRequest,
+    ObjectValue,
+    Producer,
     ProposalConfirmRequest,
     ProposalCorrectRequest,
     ProposalDecision,
     ProposalRecord,
     ProposalRejectRequest,
     ProposalSubmitRequest,
+    ProposedAssertion,
     Ref,
+    SourceImportRecord,
+    SourceImportRequest,
+    SourceRecordEvidenceRecord,
+    SourceReference,
+    SourceTransactionRecord,
+    UserStatementEvidenceRecord,
     ValidTime,
 )
 from topo.modules import ModuleCatalog
@@ -156,6 +165,180 @@ class EngineCore:
         self._commit_update(publication, request.expected_generation)
         return self._success(request, generation_id, result)
 
+    def import_source(self, request: SourceImportRequest) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        self._module_catalog.require_pinned_identifiers(
+            (
+                "domain.accounts/posting",
+                "domain.cashflow/booking_date",
+                "domain.cashflow/money",
+                "domain.cashflow/description",
+                "domain.cashflow/source_classification",
+            ),
+            validated.manifest.modules,
+        )
+
+        now = self._now()
+        entities = list(validated.entities.records)
+        assertions = list(validated.assertions.records)
+        evidence = list(validated.evidence.records)
+        proposals = list(validated.proposals.records)
+        evidence_refs: list[Ref] = []
+        transaction_refs: list[Ref] = []
+        imported = 0
+
+        for record in request.records:
+            prior = self._latest_source_evidence(
+                tuple(evidence), request.adapter.adapter_id, record
+            )
+            checksum = self._source_record_checksum(record)
+            if prior is not None and prior.source.record_checksum == checksum:
+                transaction_id = self._transaction_for_evidence(
+                    tuple(assertions), prior.id
+                )
+                evidence_refs.append(Ref(ref_type="evidence", id=prior.id))
+                transaction_refs.append(Ref(ref_type="entity", id=transaction_id))
+                continue
+
+            transaction_id = (
+                self._transaction_for_evidence(tuple(assertions), prior.id)
+                if prior is not None
+                else self._id_factory()
+            )
+            if prior is None:
+                entities.append(
+                    EntityRecord(
+                        id=transaction_id,
+                        entity_type="transaction",
+                        module_id="domain.cashflow",
+                        created_at=now,
+                    )
+                )
+            evidence_id = self._id_factory()
+            source_evidence = SourceRecordEvidenceRecord(
+                id=evidence_id,
+                evidence_type="source_record",
+                source=SourceReference(
+                    adapter_id=request.adapter.adapter_id,
+                    adapter_version=request.adapter.adapter_version,
+                    source_id=record.source_id,
+                    record_id=record.record_id,
+                    record_checksum=checksum,
+                ),
+                record=SourceTransactionRecord(
+                    booking_date=record.booking_date,
+                    money=record.money,
+                    description=record.description,
+                ),
+                recorded_at=now,
+                supersedes=prior.id if prior is not None else None,
+            )
+            evidence.append(source_evidence)
+            if prior is not None:
+                proposals = [
+                    proposal.model_copy(update={"status": "superseded"})
+                    if proposal.status == "open"
+                    and proposal.producer.producer_type == "source_adapter"
+                    and proposal.producer.producer_id == request.adapter.adapter_id
+                    and any(ref.id == prior.id for ref in proposal.evidence_refs)
+                    else proposal
+                    for proposal in proposals
+                ]
+            prior_assertions = self._source_assertions(
+                tuple(assertions),
+                transaction_id,
+                prior.id if prior is not None else None,
+            )
+            observed = self._transaction_assertions(
+                record,
+                transaction_id=transaction_id,
+                evidence_id=evidence_id,
+                recorded_at=now,
+                superseded=prior_assertions,
+            )
+            assertions.extend(observed)
+            if record.source_classification is not None:
+                proposal_id = self._id_factory()
+                proposals.append(
+                    ProposalRecord(
+                        id=proposal_id,
+                        proposal_type="assertion",
+                        producer=Producer(
+                            producer_type="source_adapter",
+                            producer_id=request.adapter.adapter_id,
+                            producer_version=request.adapter.adapter_version,
+                        ),
+                        proposed_assertion=ProposedAssertion(
+                            subject_ref=Ref(ref_type="entity", id=transaction_id),
+                            predicate="domain.cashflow/source_classification",
+                            object_value=ObjectValue(
+                                value_type="source_classification",
+                                value=record.source_classification.model_dump(
+                                    mode="json"
+                                ),
+                            ),
+                            valid_time=ValidTime(
+                                start=record.booking_date,
+                                end_exclusive=record.booking_date + timedelta(days=1),
+                            ),
+                            knowledge_type="inferred",
+                            module_data={},
+                        ),
+                        evidence_refs=(Ref(ref_type="evidence", id=evidence_id),),
+                        reason_ref=(
+                            "source-classification:"
+                            f"{request.adapter.adapter_id}/"
+                            f"{record.source_classification.rule_version}"
+                        ),
+                        detection=None,
+                        status="open",
+                        created_at=now,
+                        decision=None,
+                    )
+                )
+            imported += 1
+            evidence_refs.append(Ref(ref_type="evidence", id=evidence_id))
+            transaction_refs.append(Ref(ref_type="entity", id=transaction_id))
+
+        result: JsonObject = {
+            "imported": imported,
+            "evidence_refs": [ref.model_dump(mode="json") for ref in evidence_refs],
+            "transaction_refs": [
+                ref.model_dump(mode="json") for ref in transaction_refs
+            ],
+        }
+        if imported == 0:
+            return MutationOutcome(
+                context_id=request.context_id,
+                generation_before=validated.manifest.generation_id,
+                generation_after=validated.manifest.generation_id,
+                outcome="no_change",
+                result=result,
+            )
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="source.import",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            entities=tuple(entities),
+            assertions=tuple(assertions),
+            evidence=tuple(evidence),
+            proposals=tuple(proposals),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
     def confirm_proposal(self, request: ProposalConfirmRequest) -> MutationOutcome:
         validated = self._load_existing()
         replay = self._replay(validated.journal, request.operation_id)
@@ -183,7 +366,7 @@ class EngineCore:
         mutation_id = self._id_factory()
         generation_id = self._id_factory()
         proposed = proposal.proposed_assertion
-        confirmation_evidence = EvidenceRecord(
+        confirmation_evidence = UserStatementEvidenceRecord(
             id=evidence_id,
             evidence_type="user_statement",
             recorded_at=now,
@@ -282,7 +465,7 @@ class EngineCore:
         assertion_id = self._id_factory()
         mutation_id = self._id_factory()
         generation_id = self._id_factory()
-        correction_evidence = EvidenceRecord(
+        correction_evidence = UserStatementEvidenceRecord(
             id=evidence_id,
             evidence_type="user_statement",
             recorded_at=now,
@@ -514,12 +697,116 @@ class EngineCore:
             for proposal in proposals
         )
 
+    @staticmethod
+    def _latest_source_evidence(
+        evidence: tuple[EvidenceRecord, ...],
+        adapter_id: str,
+        record: SourceImportRecord,
+    ) -> SourceRecordEvidenceRecord | None:
+        matching = tuple(
+            item
+            for item in evidence
+            if isinstance(item, SourceRecordEvidenceRecord)
+            and item.source.adapter_id == adapter_id
+            and item.source.source_id == record.source_id
+            and item.source.record_id == record.record_id
+        )
+        superseded_ids = {
+            item.supersedes for item in matching if item.supersedes is not None
+        }
+        return next((item for item in matching if item.id not in superseded_ids), None)
+
+    @staticmethod
+    def _source_record_checksum(record: SourceImportRecord) -> str:
+        payload = json.dumps(
+            record.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _transaction_for_evidence(
+        assertions: tuple[AssertionRecord, ...], evidence_id: str
+    ) -> str:
+        transaction_ids = {
+            assertion.subject_ref.id
+            for assertion in assertions
+            if any(
+                ref.ref_type == "evidence" and ref.id == evidence_id
+                for ref in assertion.provenance
+            )
+            and assertion.predicate == "domain.cashflow/booking_date"
+        }
+        if len(transaction_ids) != 1:
+            raise PackageIntegrityError(
+                "source evidence does not resolve to exactly one transaction"
+            )
+        return next(iter(transaction_ids))
+
+    @staticmethod
+    def _source_assertions(
+        assertions: tuple[AssertionRecord, ...],
+        transaction_id: str,
+        evidence_id: str | None,
+    ) -> dict[str, AssertionRecord]:
+        if evidence_id is None:
+            return {}
+        return {
+            assertion.predicate: assertion
+            for assertion in assertions
+            if assertion.subject_ref.id == transaction_id
+            and any(
+                ref.ref_type == "evidence" and ref.id == evidence_id
+                for ref in assertion.provenance
+            )
+        }
+
+    def _transaction_assertions(
+        self,
+        record: SourceImportRecord,
+        *,
+        transaction_id: str,
+        evidence_id: str,
+        recorded_at: datetime,
+        superseded: dict[str, AssertionRecord],
+    ) -> tuple[AssertionRecord, ...]:
+        values: tuple[tuple[str, str, JsonValue], ...] = (
+            ("domain.accounts/posting", "source_account", record.source_id),
+            ("domain.cashflow/booking_date", "date", record.booking_date.isoformat()),
+            ("domain.cashflow/money", "money", record.money.model_dump(mode="json")),
+            ("domain.cashflow/description", "text", record.description),
+        )
+        return tuple(
+            AssertionRecord(
+                id=self._id_factory(),
+                subject_ref=Ref(ref_type="entity", id=transaction_id),
+                predicate=predicate,
+                object_value=ObjectValue(value_type=value_type, value=value),
+                valid_time=ValidTime(
+                    start=record.booking_date,
+                    end_exclusive=record.booking_date + timedelta(days=1),
+                ),
+                recorded_at=recorded_at,
+                knowledge_type="observed",
+                verification_status="confirmed",
+                provenance=(Ref(ref_type="evidence", id=evidence_id),),
+                supersedes=(
+                    superseded[predicate].id if predicate in superseded else None
+                ),
+                module_data={},
+            )
+            for predicate, value_type, value in values
+        )
+
     def _build_update_publication(
         self,
         validated: ValidatedPackage,
         *,
         request: MutationRequest,
         operation: Literal[
+            "source.import",
             "proposal.submit",
             "proposal.confirm",
             "proposal.correct",
@@ -529,12 +816,22 @@ class EngineCore:
         generation_id: str,
         result: JsonObject,
         now: datetime,
+        entities: tuple[EntityRecord, ...] | None = None,
         assertions: tuple[AssertionRecord, ...] | None = None,
         evidence: tuple[EvidenceRecord, ...] | None = None,
         proposals: tuple[ProposalRecord, ...] | None = None,
     ) -> PackageCommit:
         collections = {
-            "entities.json": _json_bytes(validated.entities),
+            "entities.json": _json_bytes(
+                CanonicalCollection[EntityRecord](
+                    schema_version="topo.context/0.1",
+                    records=tuple(
+                        sorted(
+                            entities or validated.entities.records, key=lambda x: x.id
+                        )
+                    ),
+                )
+            ),
             "assertions.json": _json_bytes(
                 CanonicalCollection[AssertionRecord](
                     schema_version="topo.context/0.1",
@@ -680,7 +977,7 @@ class EngineCore:
         evidence = CanonicalCollection[EvidenceRecord](
             schema_version="topo.context/0.1",
             records=(
-                EvidenceRecord(
+                UserStatementEvidenceRecord(
                     id=evidence_id,
                     evidence_type="user_statement",
                     recorded_at=now,

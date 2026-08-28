@@ -62,8 +62,8 @@ class ValidTime(TopoModel):
 
 class EntityRecord(TopoModel):
     id: UUID7
-    entity_type: Literal["context", "person", "household"]
-    module_id: Literal["topo.core", "domain.parties"]
+    entity_type: Literal["context", "person", "household", "transaction"]
+    module_id: Literal["topo.core", "domain.parties", "domain.cashflow"]
     created_at: AwareDatetime
 
 
@@ -90,7 +90,7 @@ class AssertionRecord(TopoModel):
         return self
 
 
-class EvidenceRecord(TopoModel):
+class UserStatementEvidenceRecord(TopoModel):
     id: UUID7
     evidence_type: Literal["user_statement"]
     recorded_at: AwareDatetime
@@ -98,6 +98,35 @@ class EvidenceRecord(TopoModel):
         "context_initialization", "proposal_confirmation", "proposal_correction"
     ]
     statement: JsonObject | None = None
+
+
+class SourceReference(TopoModel):
+    adapter_id: NonEmptyString
+    adapter_version: NonEmptyString
+    source_id: NonEmptyString
+    record_id: NonEmptyString
+    record_checksum: Checksum
+
+
+class SourceTransactionRecord(TopoModel):
+    booking_date: date
+    money: Money
+    description: str
+
+
+class SourceRecordEvidenceRecord(TopoModel):
+    id: UUID7
+    evidence_type: Literal["source_record"]
+    source: SourceReference
+    record: SourceTransactionRecord
+    recorded_at: AwareDatetime
+    supersedes: UUID7 | None
+
+
+type EvidenceRecord = Annotated[
+    UserStatementEvidenceRecord | SourceRecordEvidenceRecord,
+    Field(discriminator="evidence_type"),
+]
 
 
 class ObjectValue(TopoModel):
@@ -122,7 +151,7 @@ class ProposedAssertion(TopoModel):
 
 
 class Producer(TopoModel):
-    producer_type: Literal["agent", "rule_module"]
+    producer_type: Literal["agent", "rule_module", "source_adapter"]
     producer_id: NonEmptyString
     producer_version: NonEmptyString
 
@@ -183,6 +212,7 @@ class JournalEntry(TopoModel):
     mutation_id: UUID7
     operation: Literal[
         "context.init",
+        "source.import",
         "proposal.submit",
         "proposal.confirm",
         "proposal.correct",
@@ -237,6 +267,45 @@ class MutationRequest(TopoModel):
     expected_generation: UUID7
     actor: Actor
     reason: NonEmptyString
+
+
+class SourceAdapter(TopoModel):
+    adapter_id: NonEmptyString
+    adapter_version: NonEmptyString
+
+
+class SourceClassification(TopoModel):
+    category: str
+    rule_version: str
+    explanation: str
+
+
+class SourceImportRecord(TopoModel):
+    source_id: NonEmptyString
+    record_id: NonEmptyString
+    booking_date: date
+    money: Money
+    description: str
+    source_classification: SourceClassification | None = None
+
+
+class SourceImportRequest(MutationRequest):
+    adapter: SourceAdapter
+    records: tuple[SourceImportRecord, ...]
+
+    @model_validator(mode="after")
+    def authorized_unique_records(self) -> SourceImportRequest:
+        if (
+            self.actor.actor_type != "source_adapter"
+            or self.actor.actor_id != self.adapter.adapter_id
+        ):
+            raise ValueError("source import must be performed by its source adapter")
+        identities = tuple(
+            (record.source_id, record.record_id) for record in self.records
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("source import records must have unique source identities")
+        return self
 
 
 class ProposalSubmitRequest(MutationRequest):

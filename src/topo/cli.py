@@ -40,6 +40,7 @@ from topo.models import (
     ProposalSubmitRequest,
     Ref,
     ResponseEnvelope,
+    SourceImportRequest,
     Trace,
     model_to_json_object,
 )
@@ -180,6 +181,11 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("submit", "confirm", "correct", "reject"):
         proposal_command = proposal_commands.add_parser(name)
         proposal_command.add_argument("--package", type=Path, required=True)
+
+    source = commands.add_parser("source")
+    source_commands = source.add_subparsers(dest="source_command", required=True)
+    source_import = source_commands.add_parser("import")
+    source_import.add_argument("--package", type=Path, required=True)
     return parser
 
 
@@ -326,6 +332,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"contract.{args.contract_command}"
     elif args.group == "context":
         command = f"context.{args.context_command}"
+    elif args.group == "source":
+        command = f"source.{args.source_command}"
     else:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
@@ -367,6 +375,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     outcome="no_change" if initialization.replayed else "succeeded",
                 )
             )
+            return 0
+        if command == "source.import":
+            outcome = EngineCore(FileSystemStorageAdapter(args.package)).import_source(
+                SourceImportRequest.model_validate_json(
+                    json.dumps(request), strict=True
+                )
+            )
+            _write_json(_mutation_envelope(command, request, outcome))
             return 0
         if command.startswith("proposal."):
             engine = EngineCore(FileSystemStorageAdapter(args.package))

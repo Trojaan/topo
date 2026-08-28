@@ -21,6 +21,7 @@ COMMANDS = (
     "context.init",
     "contract.describe",
     "contract.schema",
+    "source.import",
     "proposal.submit",
     "proposal.confirm",
     "proposal.correct",
