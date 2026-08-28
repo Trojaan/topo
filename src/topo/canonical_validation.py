@@ -375,7 +375,9 @@ class ValidatedPackage:
     initialization_result: ContextInitResult
 
 
-def _validate_snapshot(snapshot: StoredPackageSnapshot) -> ValidatedPackage:
+def _validate_snapshot(
+    snapshot: StoredPackageSnapshot, *, require_journal_tip: bool = True
+) -> ValidatedPackage:
     generation_files = snapshot.generation_files
     expected_files = {*COLLECTION_SCHEMAS, "manifest.json"}
     if set(generation_files) != expected_files:
@@ -499,11 +501,20 @@ def _validate_snapshot(snapshot: StoredPackageSnapshot) -> ValidatedPackage:
 
     if not journal.entries or journal.entries[0].operation != "context.init":
         raise PackageIntegrityError("journal must start with context.init")
-    entry = journal.entries[-1]
-    if entry.generation_after != manifest.generation_id:
+    matching_entries = tuple(
+        entry
+        for entry in journal.entries
+        if entry.generation_after == manifest.generation_id
+    )
+    if len(matching_entries) != 1:
+        raise PackageIntegrityError("generation must occur exactly once in the journal")
+    entry = matching_entries[0]
+    if require_journal_tip and entry != journal.entries[-1]:
         raise PackageIntegrityError("journal generation does not match the manifest")
     if entry.mutation_id != manifest.mutation_id:
         raise PackageIntegrityError("journal mutation does not match the manifest")
+    if entry.generation_before != manifest.based_on:
+        raise PackageIntegrityError("journal lineage does not match the manifest")
 
     result = ContextInitResult(
         context_id=context.id,
@@ -529,7 +540,28 @@ def load_and_validate_generation(
 ) -> ValidatedPackage:
     """Turn untrusted package bytes into a completely validated initial package."""
     try:
-        return _validate_snapshot(snapshot)
+        current = _validate_snapshot(snapshot)
+        retained = snapshot.retained_generation_files
+        if retained is not None:
+            expected_retained = {
+                entry.generation_after
+                for entry in current.journal.entries
+                if entry.generation_after != snapshot.current_generation
+            }
+            if set(retained) != expected_retained:
+                raise PackageIntegrityError(
+                    "retained generations do not match the journal"
+                )
+            for generation_id, generation_files in retained.items():
+                _validate_snapshot(
+                    StoredPackageSnapshot(
+                        current_generation=generation_id,
+                        generation_files=generation_files,
+                        journal=snapshot.journal,
+                    ),
+                    require_journal_tip=False,
+                )
+        return current
     except PackageIntegrityError:
         raise
     except (
