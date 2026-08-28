@@ -17,9 +17,7 @@ from topo.storage import FileSystemStorageAdapter, PackageCommit
 PROJECT_ROOT = Path(__file__).parents[1]
 
 
-def run_topo(
-    *args: str, request: dict[str, Any]
-) -> subprocess.CompletedProcess[str]:
+def run_topo(*args: str, request: dict[str, Any]) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
     return subprocess.run(
@@ -104,9 +102,7 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     initialized = initialize(package)
     current_id = initialized["generation_after"]
     current_path = package / "generations" / current_id
-    current_before = {
-        path.name: path.read_bytes() for path in current_path.iterdir()
-    }
+    current_before = {path.name: path.read_bytes() for path in current_path.iterdir()}
 
     orphan_id = "0198f1a0-0000-7000-8000-000000000099"
     orphan_path = package / "generations" / orphan_id
@@ -115,7 +111,8 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     orphan_manifest["generation_id"] = orphan_id
     orphan_manifest["based_on"] = current_id
     (orphan_path / "manifest.json").write_text(
-        json.dumps(orphan_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(orphan_manifest, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n",
         encoding="utf-8",
     )
 
@@ -193,9 +190,10 @@ def test_startup_finishes_journal_switch_after_current_was_published(
     assert snapshot.current_generation == submitted["generation_after"]
     assert journal_path.read_bytes() == complete_journal
     assert not (package / "history" / ".journal.tmp").exists()
-    assert {
-        path.name for path in (package / "generations").iterdir()
-    } == {initialized["generation_after"], submitted["generation_after"]}
+    assert {path.name for path in (package / "generations").iterdir()} == {
+        initialized["generation_after"],
+        submitted["generation_after"],
+    }
 
 
 def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> None:
@@ -203,16 +201,11 @@ def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> N
     initialized = initialize(package)
     submitted = submit_salary_proposal(package, initialized)
     historical_entities = (
-        package
-        / "generations"
-        / initialized["generation_after"]
-        / "entities.json"
+        package / "generations" / initialized["generation_after"] / "entities.json"
     )
     entities = read_json(historical_entities)
     entities["records"] = [
-        record
-        for record in entities["records"]
-        if record["entity_type"] != "person"
+        record for record in entities["records"] if record["entity_type"] != "person"
     ]
     entities_payload = (
         json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -224,9 +217,7 @@ def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> N
         "sha256:" + hashlib.sha256(entities_payload).hexdigest()
     )
     historical_manifest_path.write_text(
-        json.dumps(
-            historical_manifest, ensure_ascii=False, indent=2, sort_keys=True
-        )
+        json.dumps(historical_manifest, ensure_ascii=False, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
     )
@@ -254,9 +245,9 @@ def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> N
     response = json.loads(rejected.stdout)
     assert response["diagnostics"][0]["code"] == "PACKAGE_INTEGRITY_FAILED"
     assert response["diagnostics"][0]["effect"] == "none"
-    assert (
-        package / "CURRENT"
-    ).read_text(encoding="utf-8").strip() == submitted["generation_after"]
+    assert (package / "CURRENT").read_text(encoding="utf-8").strip() == submitted[
+        "generation_after"
+    ]
 
 
 def test_symlinked_staging_is_not_followed_and_blocks_all_publication(

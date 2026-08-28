@@ -163,7 +163,12 @@ class FileSystemStorageAdapter:
                 publication.generation_id, publication.generation_files
             )
             self._validate_journal_tip(publication.journal, publication.generation_id)
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as error:
+        except (
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise PackageIntegrityError(str(error)) from error
         if expected_generation is None:
             initialization_lock = self._package.parent / f".{self._package.name}.lock"
@@ -224,7 +229,13 @@ class FileSystemStorageAdapter:
             if previous != current:
                 return None
             return published
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+        except (
+            OSError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            TypeError,
+            ValueError,
+        ):
             return None
 
     def _recover_and_validate_history(self) -> bool:

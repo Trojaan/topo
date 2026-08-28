@@ -27,12 +27,12 @@ topo = "topo.cli:main"
 packages = ["src/topo"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "e2e"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "e2e", "scripts/check_architecture.py"]
 mypy_path = "src"
 
 [tool.ruff]
