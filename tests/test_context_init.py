@@ -138,6 +138,7 @@ def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None
     manifest = read_json(generation / "manifest.json")
     assert manifest["schema_version"] == "topo.manifest/0.1"
     assert manifest["context_id"] == response["context_id"]
+    assert "jurisdiction.nl" in {module["module_id"] for module in manifest["modules"]}
     assert manifest["generation_id"] == generation_id
     assert manifest["based_on"] is None
     for filename, expected_checksum in manifest["files"].items():

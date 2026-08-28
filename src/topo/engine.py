@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from topo.builtin_modules import default_module_catalog
 from topo.canonical_validation import ValidatedPackage, load_and_validate_generation
 from topo.errors import (
     ContextAlreadyExistsError,
@@ -28,7 +29,6 @@ from topo.models import (
     JournalEntry,
     JsonObject,
     Manifest,
-    ModulePin,
     MutationOutcome,
     MutationRequest,
     ProposalConfirmRequest,
@@ -40,6 +40,7 @@ from topo.models import (
     Ref,
     ValidTime,
 )
+from topo.modules import ModuleCatalog
 from topo.storage import (
     PackageCommit,
     StorageAdapter,
@@ -70,12 +71,6 @@ def _json_bytes(value: BaseModel) -> bytes:
     ).encode("utf-8")
 
 
-def _module_checksum(module_id: str, module_version: str) -> str:
-    # Ticket 03 replaces this compatibility placeholder with an artifact digest.
-    identity = f"{module_id}/{module_version}".encode()
-    return "sha256:" + hashlib.sha256(identity).hexdigest()
-
-
 class EngineCore:
     """Own generation, validation, history, and replay semantics."""
 
@@ -85,10 +80,12 @@ class EngineCore:
         *,
         clock: Clock | None = None,
         id_factory: IdFactory = uuid7,
+        module_catalog: ModuleCatalog | None = None,
     ) -> None:
         self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         self._id_factory = id_factory
+        self._module_catalog = module_catalog or default_module_catalog()
 
     def initialize(self, request: ContextInitRequest) -> InitializationOutcome:
         try:
@@ -128,6 +125,12 @@ class EngineCore:
         conflict = self._guard_request(validated.manifest, request)
         if conflict is not None:
             return conflict
+        self._module_catalog.validate_proposed_assertion(
+            request.proposal.proposed_assertion,
+            validated.manifest.modules,
+            validated.assertions.records,
+            validated.entities.records,
+        )
         now = self._now()
         proposal_id = self._id_factory()
         mutation_id = self._id_factory()
@@ -168,6 +171,12 @@ class EngineCore:
         if request.authorization is None:
             return self._authorization_required(request, preview)
         self._validate_authorization(request.authorization, preview)
+        self._module_catalog.validate_proposed_assertion(
+            proposal.proposed_assertion,
+            validated.manifest.modules,
+            validated.assertions.records,
+            validated.entities.records,
+        )
         now = self._now()
         evidence_id = self._id_factory()
         assertion_id = self._id_factory()
@@ -246,6 +255,19 @@ class EngineCore:
         proposal = self._open_proposal(
             validated.proposals.records, request.proposal_ref
         )
+        proposed = proposal.proposed_assertion
+        corrected = proposed.model_copy(
+            update={
+                "object_ref": request.correction.object_ref,
+                "object_value": request.correction.object_value,
+            }
+        )
+        self._module_catalog.validate_proposed_assertion(
+            corrected,
+            validated.manifest.modules,
+            validated.assertions.records,
+            validated.entities.records,
+        )
         preview = self._preview_result(
             "proposal.correct",
             request,
@@ -272,13 +294,12 @@ class EngineCore:
                 "authorization": request.authorization.model_dump(mode="json"),
             },
         )
-        proposed = proposal.proposed_assertion
         assertion = AssertionRecord(
             id=assertion_id,
             subject_ref=proposed.subject_ref,
             predicate=proposed.predicate,
-            object_ref=request.correction.object_ref,
-            object_value=request.correction.object_value,
+            object_ref=corrected.object_ref,
+            object_value=corrected.object_value,
             valid_time=proposed.valid_time,
             recorded_at=now,
             knowledge_type="user_provided",
@@ -708,18 +729,7 @@ class EngineCore:
             context_schema_version="topo.context/0.1",
             mutation_id=mutation_id,
             recorded_at=now,
-            modules=(
-                ModulePin(
-                    module_id="topo.core",
-                    module_version="0.1.0",
-                    checksum=_module_checksum("topo.core", "0.1.0"),
-                ),
-                ModulePin(
-                    module_id="domain.parties",
-                    module_version="0.1.0",
-                    checksum=_module_checksum("domain.parties", "0.1.0"),
-                ),
-            ),
+            modules=self._module_catalog.pins,
             active_rule_packages=(),
             files=checksums,
         )

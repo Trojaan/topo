@@ -24,6 +24,7 @@ from topo.errors import (
     ContextAlreadyExistsError,
     PackageIntegrityError,
     ProposalDecisionError,
+    SemanticModulesUnavailableError,
     StaleGenerationError,
 )
 from topo.identifiers import uuid7
@@ -432,6 +433,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             message_key="diagnostic.package_integrity_failed",
             path="/package",
             reason=error.reason,
+            json_output=json_output,
+        )
+    except SemanticModulesUnavailableError as error:
+        return _write_error(
+            command,
+            request,
+            code="SEMANTIC_MODULE_UNAVAILABLE",
+            message_key="diagnostic.semantic_module_unavailable",
+            path="/package",
+            reason=f"missing pinned modules: {', '.join(error.module_ids)}",
             json_output=json_output,
         )
     except ProposalDecisionError as error:

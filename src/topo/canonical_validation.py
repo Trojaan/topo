@@ -407,6 +407,9 @@ def _validate_snapshot(snapshot: StoredPackageSnapshot) -> ValidatedPackage:
     manifest = Manifest.model_validate_json(
         generation_files["manifest.json"], strict=True
     )
+    module_ids = [module.module_id for module in manifest.modules]
+    if len(module_ids) != len(set(module_ids)):
+        raise PackageIntegrityError("manifest module pins must be unique")
     entities = CanonicalCollection[EntityRecord].model_validate_json(
         generation_files["entities.json"], strict=True
     )

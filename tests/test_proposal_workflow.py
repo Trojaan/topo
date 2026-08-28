@@ -8,7 +8,16 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from jsonschema import Draft202012Validator
+
+from topo.builtin_modules import default_module_catalog
+from topo.canonical_validation import load_and_validate_generation
+from topo.engine import EngineCore
+from topo.errors import SemanticModulesUnavailableError
+from topo.models import ProposalSubmitRequest
+from topo.modules import ENGINE_CONTRACT_VERSION, ModuleCatalog
+from topo.storage import FileSystemStorageAdapter
 
 PROJECT_ROOT = Path(__file__).parents[1]
 
@@ -109,6 +118,32 @@ def submit_proposal(package: Path, initialization: dict[str, Any]) -> dict[str, 
     )
     assert response.returncode == 0, response.stdout + response.stderr
     return cast(dict[str, Any], json.loads(response.stdout))
+
+
+def submit_custom_proposal(
+    package: Path,
+    initialization: dict[str, Any],
+    *,
+    operation_id: str,
+    predicate: str,
+    module_data: dict[str, Any],
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    base_proposal = proposal_payload(initialization, package)
+    request = {
+        **mutation_metadata(initialization, operation_id),
+        "proposal": {
+            **base_proposal,
+            "proposed_assertion": {
+                **base_proposal["proposed_assertion"],
+                "predicate": predicate,
+                "module_data": module_data,
+            },
+        },
+    }
+    response = run_topo(
+        "proposal", "submit", "--package", str(package), request=request
+    )
+    return response, cast(dict[str, Any], json.loads(response.stdout))
 
 
 def test_user_submits_previews_and_confirms_an_immutable_proposal(
@@ -218,6 +253,211 @@ def test_user_submits_previews_and_confirms_an_immutable_proposal(
     for filename, checksum in manifest["files"].items():
         payload = (confirmed_generation / filename).read_bytes()
         assert checksum == "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def test_dutch_woz_requires_its_own_valuation_date_without_partial_effect(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "woz.topo"
+    initialization = initialize(package)
+    generation_before, _ = current_generation(package)
+
+    rejected, body = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000020",
+        predicate="jurisdiction.nl/valuation/woz",
+        module_data={},
+    )
+
+    assert rejected.returncode == 0
+    assert body["outcome"] == "rejected"
+    assert body["diagnostics"][0]["code"] == "NL_WOZ_AS_OF_DATE_REQUIRED"
+    assert body["diagnostics"][0]["path"] == (
+        "/proposal/proposed_assertion/module_data/valuation_date"
+    )
+    assert body["diagnostics"][0]["effect"] == "none"
+    assert current_generation(package)[0] == generation_before
+
+    accepted, accepted_body = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000021",
+        predicate="jurisdiction.nl/valuation/woz",
+        module_data={"valuation_date": "2025-01-01"},
+    )
+    assert accepted.returncode == 0
+    assert accepted_body["outcome"] == "succeeded"
+
+
+def test_explicit_complete_distribution_must_total_one_without_partial_effect(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "distribution.topo"
+    initialization = initialize(package)
+    generation_before, _ = current_generation(package)
+
+    rejected, body = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000022",
+        predicate="domain.parties/ownership",
+        module_data={"distribution": {"complete": True, "shares": ["0.60", "0.30"]}},
+    )
+
+    assert rejected.returncode == 0
+    assert body["outcome"] == "rejected"
+    assert body["diagnostics"][0]["code"] == "INVALID_COMPLETE_DISTRIBUTION"
+    assert current_generation(package)[0] == generation_before
+
+    accepted, accepted_body = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000024",
+        predicate="domain.parties/ownership",
+        module_data={"distribution": {"complete": True, "shares": ["0.60", "0.40"]}},
+    )
+    assert accepted.returncode == 0
+    assert accepted_body["outcome"] == "succeeded"
+
+
+def test_dutch_coverage_and_demonstrable_double_counting_are_rejected(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "dutch-constraints.topo"
+    initialization = initialize(package)
+    generation_before, _ = current_generation(package)
+
+    _, invalid_coverage = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000026",
+        predicate="jurisdiction.nl/coverage/basic_health",
+        module_data={"target_type": "asset"},
+    )
+    assert invalid_coverage["diagnostics"][0]["code"] == (
+        "INVALID_COVERAGE_TARGET_TYPE"
+    )
+    assert current_generation(package)[0] == generation_before
+
+    _, account_balance = submit_custom_proposal(
+        package,
+        initialization,
+        operation_id="0198f1a0-0000-7000-8000-000000000027",
+        predicate="domain.accounts/classification/payment_account",
+        module_data={
+            "economic_interest_ref": "account:main",
+            "valuation_basis": "account_balance",
+        },
+    )
+    preview_request = {
+        **mutation_metadata(
+            {**initialization, "generation_after": account_balance["generation_after"]},
+            "0198f1a0-0000-7000-8000-000000000028",
+        ),
+        "proposal_ref": account_balance["result"]["proposal_id"],
+        "authorization": None,
+    }
+    preview_response = run_topo(
+        "proposal", "confirm", "--package", str(package), request=preview_request
+    )
+    preview = cast(dict[str, Any], json.loads(preview_response.stdout))
+    confirmed_response = run_topo(
+        "proposal",
+        "confirm",
+        "--package",
+        str(package),
+        request={
+            **preview_request,
+            "authorization": {
+                "preview_ref": preview["result"]["preview_ref"],
+                "authorized_by": {"actor_type": "human", "actor_id": "local-user"},
+                "authorized_at": "2026-08-27T12:00:00Z",
+            },
+        },
+    )
+    confirmed = cast(dict[str, Any], json.loads(confirmed_response.stdout))
+    assert confirmed["outcome"] == "succeeded"
+
+    _, double_counted = submit_custom_proposal(
+        package,
+        {**initialization, "generation_after": confirmed["generation_after"]},
+        operation_id="0198f1a0-0000-7000-8000-000000000029",
+        predicate="jurisdiction.nl/valuation/woz",
+        module_data={
+            "valuation_date": "2025-01-01",
+            "economic_interest_ref": "account:main",
+            "valuation_basis": "asset_value",
+        },
+    )
+    assert double_counted["diagnostics"][0]["code"] == ("DEMONSTRABLE_DOUBLE_COUNTING")
+    assert current_generation(package)[0] == confirmed["generation_after"]
+
+
+def test_missing_pinned_semantic_module_keeps_reads_but_blocks_mutation(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "missing-module.topo"
+    initialization = initialize(package)
+    generation_before, _ = current_generation(package)
+    installed = default_module_catalog()
+    without_dutch_overlay = ModuleCatalog(
+        tuple(
+            module
+            for module in installed.modules
+            if module.module_id != "jurisdiction.nl"
+        ),
+        engine_contract_version=ENGINE_CONTRACT_VERSION,
+    )
+    unrelated_request = ProposalSubmitRequest.model_validate_json(
+        json.dumps(
+            {
+                **mutation_metadata(
+                    initialization, "0198f1a0-0000-7000-8000-000000000023"
+                ),
+                "proposal": proposal_payload(initialization, package),
+            }
+        ),
+        strict=True,
+    )
+    storage = FileSystemStorageAdapter(package)
+    engine = EngineCore(storage, module_catalog=without_dutch_overlay)
+
+    snapshot = storage.load()
+    assert snapshot is not None
+    assert (
+        load_and_validate_generation(snapshot).manifest.context_id
+        == (initialization["context_id"])
+    )
+    unrelated = engine.submit_proposal(unrelated_request)
+    assert unrelated.outcome == "succeeded"
+    assert unrelated.generation_after != generation_before
+
+    dependent_payload = proposal_payload(
+        {**initialization, "generation_after": unrelated.generation_after}, package
+    )
+    dependent_payload["proposed_assertion"] = {
+        **dependent_payload["proposed_assertion"],
+        "predicate": "jurisdiction.nl/valuation/woz",
+        "module_data": {"valuation_date": "2025-01-01"},
+    }
+    dependent_request = ProposalSubmitRequest.model_validate_json(
+        json.dumps(
+            {
+                **mutation_metadata(
+                    {**initialization, "generation_after": unrelated.generation_after},
+                    "0198f1a0-0000-7000-8000-000000000025",
+                ),
+                "proposal": dependent_payload,
+            }
+        ),
+        strict=True,
+    )
+    with pytest.raises(SemanticModulesUnavailableError) as blocked:
+        engine.submit_proposal(dependent_request)
+
+    assert blocked.value.module_ids == ("jurisdiction.nl",)
+    assert current_generation(package)[0] == unrelated.generation_after
 
 
 def test_user_can_correct_or_reject_without_losing_the_original_proposal(
