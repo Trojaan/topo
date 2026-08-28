@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Annotated, Literal, cast
 
 from pydantic import (
@@ -53,6 +54,57 @@ class Ref(TopoModel):
 class Money(TopoModel):
     amount: DecimalString
     currency: Currency
+
+
+class RecurringExpectedPeriod(TopoModel):
+    start_date: date
+    end_exclusive: date
+
+    @model_validator(mode="after")
+    def ordered_period(self) -> RecurringExpectedPeriod:
+        if self.end_exclusive <= self.start_date:
+            raise ValueError("expected period must be non-empty")
+        return self
+
+
+class RecurringAmountRange(TopoModel):
+    minimum: Money
+    maximum: Money
+
+    @model_validator(mode="after")
+    def ordered_range(self) -> RecurringAmountRange:
+        if self.minimum.currency != self.maximum.currency:
+            raise ValueError("amount range currencies must match")
+        if Decimal(self.minimum.amount) > Decimal(self.maximum.amount):
+            raise ValueError("amount range minimum must not exceed maximum")
+        return self
+
+
+class RecurringCashflowValue(TopoModel):
+    frequency: Literal["weekly", "four_weekly", "monthly", "quarterly", "annual"]
+    direction: Literal["inflow", "outflow"]
+    expected_period: RecurringExpectedPeriod
+    money: Money | None = None
+    amount_range: RecurringAmountRange | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_amount(self) -> RecurringCashflowValue:
+        if (self.money is None) == (self.amount_range is None):
+            raise ValueError("exactly one of money and amount_range is required")
+        amounts: tuple[Decimal, ...]
+        if self.money is not None:
+            amounts = (Decimal(self.money.amount),)
+        else:
+            assert self.amount_range is not None
+            amounts = (
+                Decimal(self.amount_range.minimum.amount),
+                Decimal(self.amount_range.maximum.amount),
+            )
+        if self.direction == "inflow" and any(amount <= 0 for amount in amounts):
+            raise ValueError("inflow amounts must be positive")
+        if self.direction == "outflow" and any(amount >= 0 for amount in amounts):
+            raise ValueError("outflow amounts must be negative")
+        return self
 
 
 class ValidTime(TopoModel):
@@ -301,6 +353,24 @@ class SourceImportRequest(MutationRequest):
         if len(identities) != len(set(identities)):
             raise ValueError("source import records must have unique source identities")
         return self
+
+
+class AnalysisScope(TopoModel):
+    scope_type: Literal["person", "household"]
+    entity_id: UUID7
+
+
+class DiscoveryRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+
+
+class DiscoveryOutcome(TopoModel):
+    context_id: UUID7
+    generation_id: UUID7
+    result: JsonObject
 
 
 class ProposalSubmitRequest(MutationRequest):

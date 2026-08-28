@@ -54,4 +54,15 @@ Its required columns are `source_id`, `record_id`, `booking_date`, `amount`,
 `currency`, and `description`; the optional classification is supplied as the
 complete trio `category`, `rule_version`, and `explanation`.
 
+Run effect-free recurring cashflow discovery with a `discover.run` request that
+contains `context_id`, `analysis_scope`, and `as_of_date`:
+
+```bash
+uv run topo discover run --package /tmp/example.topo --request /tmp/discover.json --json
+```
+
+The response keeps `generation_before` and `generation_after` equal. To retain a
+selected candidate, copy its `proposal` object into an explicit `proposal submit`
+request.
+
 Never use real financial data in tests or committed fixtures.

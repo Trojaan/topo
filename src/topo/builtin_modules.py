@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from pydantic import ValidationError
+
 from topo.errors import ProposalDecisionError
-from topo.models import AssertionRecord, EntityRecord, ProposedAssertion
+from topo.models import (
+    AssertionRecord,
+    EntityRecord,
+    ProposedAssertion,
+    RecurringCashflowValue,
+)
 from topo.modules import (
     ENGINE_CONTRACT_VERSION,
     ModuleCatalog,
@@ -188,6 +196,44 @@ def _exclusive_classification_constraint(
     return ModuleConstraint(f"{module_id}.exclusive-classification", validate)
 
 
+def _validate_recurring_cashflow(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    del existing
+    if assertion.predicate != "domain.cashflow/recurring_cashflow":
+        return
+    subject = next(
+        (entity for entity in entities if entity.id == assertion.subject_ref.id), None
+    )
+    if subject is None or subject.entity_type not in {"person", "household"}:
+        raise ProposalDecisionError(
+            "INVALID_RECURRING_CASHFLOW_SCOPE",
+            "/proposal/proposed_assertion/subject_ref",
+            "a recurring cashflow must belong to a person or household",
+        )
+    if (
+        assertion.object_value is None
+        or assertion.object_value.value_type != "recurring_cashflow"
+    ):
+        raise ProposalDecisionError(
+            "INVALID_RECURRING_CASHFLOW",
+            "/proposal/proposed_assertion/object_value",
+            "a recurring cashflow requires a typed value",
+        )
+    try:
+        RecurringCashflowValue.model_validate_json(
+            json.dumps(assertion.object_value.value), strict=True
+        )
+    except ValidationError as error:
+        raise ProposalDecisionError(
+            "INVALID_RECURRING_CASHFLOW",
+            "/proposal/proposed_assertion/object_value/value",
+            str(error),
+        ) from error
+
+
 def default_module_catalog() -> ModuleCatalog:
     parties = module_descriptor(
         "domain.parties",
@@ -252,7 +298,7 @@ def default_module_catalog() -> ModuleCatalog:
     cashflow = module_descriptor(
         "domain.cashflow",
         dependencies=(ModuleDependency("domain.accounts", "0.1.0"),),
-        capabilities=("classifications", "constraints", "input_views"),
+        capabilities=("classifications", "constraints", "input_views", "recognition"),
         public_identifiers=(
             "domain.cashflow/monthly_salary",
             "domain.cashflow/booking_date",
@@ -262,10 +308,12 @@ def default_module_catalog() -> ModuleCatalog:
             "domain.cashflow/counterparty",
             "domain.cashflow/transfer_counterpart",
             "domain.cashflow/pattern_evidence",
+            "domain.cashflow/recurring_cashflow",
             *_classification_ids("domain.cashflow", cashflow_names),
         ),
         constraints=(
             _exclusive_classification_constraint("domain.cashflow", cashflow_names),
+            ModuleConstraint("recurring-cashflow-shape", _validate_recurring_cashflow),
         ),
     )
     assets = module_descriptor(

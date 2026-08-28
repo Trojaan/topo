@@ -454,6 +454,112 @@ def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> N
     assert "records" not in authorized_request
 
 
+def test_recurring_discovery_is_effect_free_and_candidates_are_submit_ready(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "recurring-discovery.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    records = [
+        {
+            "source_id": "main-account",
+            "record_id": f"salary-{month}",
+            "booking_date": f"2026-{month:02d}-25",
+            "money": {"amount": amount, "currency": "EUR"},
+            "description": "SALARY ACME",
+            "source_classification": {
+                "category": "Inkomen",
+                "rule_version": "tally-rules-17",
+                "explanation": "Matched employer rule",
+            },
+        }
+        for month, amount in ((5, "3200.00"), (6, "3225.00"), (7, "3200.00"))
+    ]
+    records.extend(
+        {
+            "source_id": "main-account",
+            "record_id": f"rent-{month}",
+            "booking_date": f"2026-{month:02d}-01",
+            "money": {"amount": "-1200.00", "currency": "EUR"},
+            "description": "LANDLORD RENT",
+        }
+        for month in (6, 7)
+    )
+    imported, _ = import_with_authorization(
+        package,
+        source_import_request(
+            initialized,
+            operation_id="0198f1a0-0000-7000-8000-000000000301",
+            adapter_id="adapter.tally",
+            adapter_version="0.1.0",
+            reason="Import recurring transactions",
+            records=records,
+        ),
+    )
+    generation_before, generation_path = current_generation(package)
+    proposals_before = (generation_path / "proposals.json").read_bytes()
+
+    discovered_process = run_topo(
+        "discover",
+        "run",
+        "--package",
+        str(package),
+        "--json",
+        request={
+            "contract_version": "topo.cli/0.1",
+            "context_id": initialized["context_id"],
+            "analysis_scope": {
+                "scope_type": "household",
+                "entity_id": initialized["result"]["household_id"],
+            },
+            "as_of_date": "2026-08-01",
+        },
+    )
+
+    assert discovered_process.returncode == 0, discovered_process.stderr
+    discovered = parse_json(discovered_process)
+    assert discovered["outcome"] == "succeeded"
+    assert discovered["generation_before"] == generation_before
+    assert discovered["generation_after"] == generation_before
+    assert current_generation(package)[0] == generation_before
+    assert (generation_path / "proposals.json").read_bytes() == proposals_before
+    assert len(discovered["result"]["candidates"]) == 1
+    candidate = discovered["result"]["candidates"][0]
+    assert candidate["frequency"] == "monthly"
+    assert candidate["amount_range"] == {
+        "minimum": {"amount": "3200.00", "currency": "EUR"},
+        "maximum": {"amount": "3225.00", "currency": "EUR"},
+    }
+    assert candidate["proposal"]["proposed_assertion"]["predicate"] == (
+        "domain.cashflow/recurring_cashflow"
+    )
+    assert [item["code"] for item in discovered["result"]["attention_items"]] == [
+        "INSUFFICIENT_PATTERN_HISTORY"
+    ]
+
+    submitted = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request={
+                "contract_version": "topo.cli/0.1",
+                "operation_id": "0198f1a0-0000-7000-8000-000000000302",
+                "context_id": initialized["context_id"],
+                "expected_generation": imported["generation_after"],
+                "actor": {"actor_type": "agent", "actor_id": "local-agent"},
+                "reason": "Select discovered salary candidate",
+                "proposal": candidate["proposal"],
+            },
+        )
+    )
+    assert submitted["outcome"] == "succeeded"
+    assert submitted["generation_after"] != generation_before
+
+
 @pytest.mark.parametrize(
     "invalid_lineage",
     [

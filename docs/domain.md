@@ -18,6 +18,15 @@ evidence and assertions; it never replaces the earlier records. Source
 classifications and explanations remain open proposals until a human confirms
 their financial meaning.
 
+`discover run` reads the current literal transaction observations without making
+a generation. The cashflow recognition module compares direction, normalized
+description, currency, interval, and amount. It recognizes weekly, four-weekly,
+monthly, quarterly, and annual candidates; returns their evidence, expected
+period, amount or range, deviations, rule version, and module-specific score; and
+returns `INSUFFICIENT_PATTERN_HISTORY` instead of inventing a pattern when the
+minimum history is absent. A candidate only enters canonical history when its
+submit-ready proposal is explicitly passed to `proposal submit`.
+
 Topo produces traceable facts, calculations, gaps, uncertainties, and scenarios.
 It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human

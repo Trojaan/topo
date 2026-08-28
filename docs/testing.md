@@ -18,6 +18,10 @@ an already-published package. There is no auth or external service in v0.1, so a
 auth/session helper and sandbox credential guard would be theatre; add them when
 such a boundary actually exists.
 
+The source journey also proves recurring discovery leaves `CURRENT` and proposals
+unchanged, reports insufficient history, and produces a candidate that can be
+selected through the ordinary proposal workflow.
+
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.

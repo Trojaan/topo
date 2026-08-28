@@ -22,6 +22,8 @@ from topo.models import (
     Authorization,
     CanonicalCollection,
     ContextInitRequest,
+    DiscoveryOutcome,
+    DiscoveryRequest,
     EntityRecord,
     EvidenceRecord,
     InitializationOutcome,
@@ -47,8 +49,10 @@ from topo.models import (
     SourceReference,
     UserStatementEvidenceRecord,
     ValidTime,
+    model_to_json_object,
 )
 from topo.modules import ModuleCatalog
+from topo.recognition import TransactionObservation, recognize_recurring_cashflows
 from topo.storage import (
     PackageCommit,
     StorageAdapter,
@@ -172,6 +176,67 @@ class EngineCore:
         )
         self._commit_update(publication, request.expected_generation)
         return self._success(request, generation_id, result)
+
+    def discover_recurring_cashflows(
+        self, request: DiscoveryRequest
+    ) -> DiscoveryOutcome:
+        validated = self._load_existing()
+        if request.context_id != validated.manifest.context_id:
+            raise ValueError("request context does not match the package")
+        scope_entities = tuple(
+            entity
+            for entity in validated.entities.records
+            if entity.id == request.analysis_scope.entity_id
+        )
+        if (
+            len(scope_entities) != 1
+            or scope_entities[0].entity_type != request.analysis_scope.scope_type
+        ):
+            raise ValueError(
+                "analysis scope does not resolve to the requested entity type"
+            )
+        self._module_catalog.require_pinned_identifiers(
+            ("domain.cashflow/recurring_cashflow",), validated.manifest.modules
+        )
+
+        superseded_evidence = {
+            record.supersedes
+            for record in validated.evidence.records
+            if isinstance(record, SourceRecordEvidenceRecord)
+            and record.supersedes is not None
+        }
+        observations: list[TransactionObservation] = []
+        for evidence in validated.evidence.records:
+            if (
+                not isinstance(evidence, SourceRecordEvidenceRecord)
+                or evidence.id in superseded_evidence
+            ):
+                continue
+            source_record = SourceImportRecord.model_validate_json(
+                validated.source_records[evidence.record_path], strict=True
+            )
+            if source_record.booking_date > request.as_of_date:
+                continue
+            observations.append(
+                TransactionObservation(
+                    transaction_id=self._transaction_for_evidence(
+                        validated.assertions.records, evidence.id
+                    ),
+                    evidence_id=evidence.id,
+                    booking_date=source_record.booking_date,
+                    amount=source_record.money.amount,
+                    currency=source_record.money.currency,
+                    description=source_record.description,
+                )
+            )
+        result = recognize_recurring_cashflows(
+            tuple(observations), subject_id=request.analysis_scope.entity_id
+        )
+        return DiscoveryOutcome(
+            context_id=validated.manifest.context_id,
+            generation_id=validated.manifest.generation_id,
+            result=model_to_json_object(result),
+        )
 
     def import_source(self, request: SourceImportRequest) -> MutationOutcome:
         validated = self._load_existing()

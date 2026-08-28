@@ -32,6 +32,7 @@ from topo.identifiers import uuid7
 from topo.models import (
     ContextInitRequest,
     Diagnostic,
+    DiscoveryRequest,
     JsonObject,
     MutationOutcome,
     Outcome,
@@ -237,6 +238,11 @@ def _parser() -> argparse.ArgumentParser:
     source_import = source_commands.add_parser("import")
     source_import.add_argument("--package", type=Path, required=True)
     source_import.add_argument("--records-csv", type=Path)
+
+    discover = commands.add_parser("discover")
+    discover_commands = discover.add_subparsers(dest="discover_command", required=True)
+    discover_run = discover_commands.add_parser("run")
+    discover_run.add_argument("--package", type=Path, required=True)
     return parser
 
 
@@ -389,6 +395,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"context.{args.context_command}"
     elif args.group == "source":
         command = f"source.{args.source_command}"
+    elif args.group == "discover":
+        command = f"discover.{args.discover_command}"
     else:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
@@ -438,6 +446,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             _write_json(_mutation_envelope(command, request, outcome))
+            return 0
+        if command == "discover.run":
+            discovery_outcome = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).discover_recurring_cashflows(
+                DiscoveryRequest.model_validate_json(json.dumps(request), strict=True)
+            )
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    discovery_outcome.result,
+                    context_id=discovery_outcome.context_id,
+                    generation_before=discovery_outcome.generation_id,
+                    generation_after=discovery_outcome.generation_id,
+                )
+            )
             return 0
         if command.startswith("proposal."):
             engine = EngineCore(FileSystemStorageAdapter(args.package))

@@ -22,6 +22,7 @@ COMMANDS = (
     "contract.describe",
     "contract.schema",
     "source.import",
+    "discover.run",
     "proposal.submit",
     "proposal.confirm",
     "proposal.correct",
@@ -555,21 +556,108 @@ def _result_schema(command: str) -> SchemaObject:
             ("imported", "evidence_refs", "transaction_refs"),
         )
     if command == "discover.run":
+        proposal_input = _mutation_input("proposal.submit")
+        proposal_properties = cast(SchemaObject, proposal_input["properties"])
+        proposal_schema = deepcopy(proposal_properties["proposal"])
+        amount_range = _closed_object(
+            {"minimum": _money(), "maximum": _money()},
+            ("minimum", "maximum"),
+        )
+        expected_period = _closed_object(
+            {
+                "start_date": {"type": "string", "format": "date"},
+                "end_exclusive": {"type": "string", "format": "date"},
+            },
+            ("start_date", "end_exclusive"),
+        )
+        detection = _closed_object(
+            {
+                "scheme": {"type": "string", "minLength": 1},
+                "score": {
+                    "type": "string",
+                    "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
+                },
+            },
+            ("scheme", "score"),
+        )
+        deviation = _closed_object(
+            {
+                "transaction_ref": _ref(("entity",)),
+                "kind": {"const": "amount_variation"},
+                "observed_money": _money(),
+            },
+            ("transaction_ref", "kind", "observed_money"),
+        )
         candidate = _closed_object(
             {
                 "candidate_id": {"type": "string", "minLength": 1},
-                "proposal_type": {"type": "string", "minLength": 1},
+                "proposal_type": {"const": "recurring_cashflow"},
+                "frequency": {
+                    "enum": [
+                        "weekly",
+                        "four_weekly",
+                        "monthly",
+                        "quarterly",
+                        "annual",
+                    ]
+                },
+                "direction": {"enum": ["inflow", "outflow"]},
+                "expected_period": expected_period,
+                "money": {"oneOf": [_money(), {"type": "null"}]},
+                "amount_range": {"oneOf": [amount_range, {"type": "null"}]},
                 "producer": {"type": "string", "minLength": 1},
+                "rule_version": {"type": "string", "minLength": 1},
                 "evidence_refs": {"type": "array", "items": _ref(("evidence",))},
+                "transaction_refs": {
+                    "type": "array",
+                    "items": _ref(("entity",)),
+                },
+                "deviations": {"type": "array", "items": deviation},
+                "detection": detection,
+                "proposal": proposal_schema,
             },
-            ("candidate_id", "proposal_type", "producer", "evidence_refs"),
+            (
+                "candidate_id",
+                "proposal_type",
+                "frequency",
+                "direction",
+                "expected_period",
+                "money",
+                "amount_range",
+                "evidence_refs",
+                "transaction_refs",
+                "deviations",
+                "producer",
+                "rule_version",
+                "detection",
+                "proposal",
+            ),
         )
         attention = _closed_object(
             {
-                "code": {"type": "string", "minLength": 1},
+                "code": {"const": "INSUFFICIENT_PATTERN_HISTORY"},
+                "message_key": {"const": "attention.insufficient_pattern_history"},
+                "frequency": {
+                    "enum": [
+                        "weekly",
+                        "four_weekly",
+                        "monthly",
+                        "quarterly",
+                        "annual",
+                    ]
+                },
+                "required_observations": {"type": "integer", "minimum": 2},
+                "actual_observations": {"type": "integer", "minimum": 0},
                 "related_refs": {"type": "array", "items": _ref()},
             },
-            ("code", "related_refs"),
+            (
+                "code",
+                "message_key",
+                "frequency",
+                "required_observations",
+                "actual_observations",
+                "related_refs",
+            ),
         )
         return _closed_object(
             {
