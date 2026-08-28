@@ -47,4 +47,11 @@ contract through stdin (or `--request`) with:
 uv run topo source import --package /tmp/example.topo --request /tmp/import.json --json
 ```
 
+Set `authorization` to `null` for the effect-free preview, then repeat the request
+with the returned `preview_ref` and explicit human authorization. A normalized CSV
+can replace the JSON `records` array with `--records-csv /tmp/transactions.csv`.
+Its required columns are `source_id`, `record_id`, `booking_date`, `amount`,
+`currency`, and `description`; the optional classification is supplied as the
+complete trio `category`, `rule_version`, and `explanation`.
+
 Never use real financial data in tests or committed fixtures.

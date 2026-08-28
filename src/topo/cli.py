@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from collections.abc import Sequence
@@ -80,7 +81,56 @@ def _normalize_request(
             "actor", {"actor_type": "human", "actor_id": "local-user"}
         )
         normalized.setdefault("reason", "Initialize local Topo context")
+    if command == "source.import" and args.records_csv is not None:
+        if "records" in normalized:
+            raise ValueError("provide records in JSON or --records-csv, not both")
+        normalized["records"] = _records_from_csv(args.records_csv)
     return normalized
+
+
+def _records_from_csv(path: Path) -> list[JsonValue]:
+    required = {
+        "source_id",
+        "record_id",
+        "booking_date",
+        "amount",
+        "currency",
+        "description",
+    }
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames is None or not required <= set(reader.fieldnames):
+            missing = sorted(required - set(reader.fieldnames or ()))
+            raise ValueError(f"normalized CSV is missing columns: {', '.join(missing)}")
+        records: list[JsonValue] = []
+        for row in reader:
+            source_classification: JsonObject | None = None
+            classification_values = (
+                row.get("category", ""),
+                row.get("rule_version", ""),
+                row.get("explanation", ""),
+            )
+            if any(classification_values):
+                if not all(classification_values):
+                    raise ValueError(
+                        "CSV classification requires category, rule_version, and explanation"
+                    )
+                source_classification = {
+                    "category": classification_values[0],
+                    "rule_version": classification_values[1],
+                    "explanation": classification_values[2],
+                }
+            record: JsonObject = {
+                "source_id": row["source_id"],
+                "record_id": row["record_id"],
+                "booking_date": row["booking_date"],
+                "money": {"amount": row["amount"], "currency": row["currency"]},
+                "description": row["description"],
+            }
+            if source_classification is not None:
+                record["source_classification"] = source_classification
+            records.append(record)
+    return records
 
 
 def _write_json(value: JsonObject) -> None:
@@ -186,6 +236,7 @@ def _parser() -> argparse.ArgumentParser:
     source_commands = source.add_subparsers(dest="source_command", required=True)
     source_import = source_commands.add_parser("import")
     source_import.add_argument("--package", type=Path, required=True)
+    source_import.add_argument("--records-csv", type=Path)
     return parser
 
 
@@ -212,20 +263,24 @@ def _mutation_envelope(
             ),
         )
     elif outcome.outcome == "requires_authorization":
+        request_template: JsonObject = {
+            "authorization": {"preview_ref": outcome.result["preview_ref"]}
+        }
+        reason_code = "SOURCE_IMPORT_REQUIRES_AUTHORIZATION"
+        if command.startswith("proposal."):
+            request_template["proposal_ref"] = request.get("proposal_ref")
+            reason_code = "PROPOSAL_DECISION_REQUIRES_AUTHORIZATION"
         next_actions = (
             {
                 "action_id": uuid7(),
                 "action_type": "authorize_preview",
                 "action_contract_version": "topo.workflow-action/0.1",
                 "priority": "blocking",
-                "reason_code": "PROPOSAL_DECISION_REQUIRES_AUTHORIZATION",
+                "reason_code": reason_code,
                 "affected_component": None,
                 "related_refs": [],
                 "command": command,
-                "request_template": {
-                    "proposal_ref": request.get("proposal_ref"),
-                    "authorization": {"preview_ref": outcome.result["preview_ref"]},
-                },
+                "request_template": request_template,
                 "input_schema_ref": f"topo://schema/{command.replace('.', '-')}-request/0.1",
                 "requires_user_input": False,
                 "requires_authorization": True,

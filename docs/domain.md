@@ -10,11 +10,13 @@ write a confirmed financial fact directly. Confirmation requires an explicit
 human authorization bound to the preview being approved.
 
 An explicitly identified source adapter is the narrow exception for literal
-observations: `source import` may persist a transaction's source account, booking
-date, money, description, and stable source identity as observed evidence. A
-source correction creates linked successor evidence and assertions; it never
-replaces the earlier records. Source classifications and explanations remain open
-proposals until a human confirms their financial meaning.
+observations. `source import` first returns an effect-free preview, and publication
+requires human authorization bound to that preview. It may then persist a
+transaction's source account, booking date, money, description, and stable source
+identity as observed evidence. A source correction creates linked successor
+evidence and assertions; it never replaces the earlier records. Source
+classifications and explanations remain open proposals until a human confirms
+their financial meaning.
 
 Topo produces traceable facts, calculations, gaps, uncertainties, and scenarios.
 It does not produce regulated financial advice or silently fill missing values.

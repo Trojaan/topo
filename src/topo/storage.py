@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -20,6 +20,7 @@ class StoredPackageSnapshot:
     current_generation: str
     generation_files: dict[str, bytes]
     journal: bytes
+    evidence_records: dict[str, bytes] = field(default_factory=dict)
     retained_generation_files: dict[str, dict[str, bytes]] | None = None
 
 
@@ -28,6 +29,7 @@ class PackageCommit:
     generation_id: str
     generation_files: dict[str, bytes]
     journal: bytes
+    evidence_records: dict[str, bytes] = field(default_factory=dict)
 
 
 class StorageAdapter(Protocol):
@@ -95,6 +97,32 @@ def _read_generation(generation: Path) -> dict[str, bytes]:
     return generation_files
 
 
+def _evidence_record_path(record_path: str) -> Path:
+    path = Path(record_path)
+    if (
+        len(path.parts) != 3
+        or path.parts[:2] != ("evidence", "records")
+        or path.suffix != ".json"
+        or path.name in {".", ".."}
+    ):
+        raise ValueError("invalid evidence record path")
+    return path
+
+
+def _read_evidence_records(package: Path) -> dict[str, bytes]:
+    records = package / "evidence" / "records"
+    if records.is_symlink() or not records.is_dir():
+        raise ValueError("evidence records must be a real directory")
+    result: dict[str, bytes] = {}
+    for path in records.iterdir():
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("evidence records contain a non-file entry")
+        record_path = str(path.relative_to(package))
+        _evidence_record_path(record_path)
+        result[record_path] = path.read_bytes()
+    return result
+
+
 def _remove_artifact(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -148,10 +176,12 @@ class FileSystemStorageAdapter:
                 if path.name != generation_id
             }
             journal = (history / "journal.json").read_bytes()
+            evidence_records = _read_evidence_records(self._package)
         return StoredPackageSnapshot(
             current_generation=generation_id,
             generation_files=generation_files,
             journal=journal,
+            evidence_records=evidence_records,
             retained_generation_files=retained_generation_files,
         )
 
@@ -163,6 +193,8 @@ class FileSystemStorageAdapter:
                 publication.generation_id, publication.generation_files
             )
             self._validate_journal_tip(publication.journal, publication.generation_id)
+            for record_path in publication.evidence_records:
+                _evidence_record_path(record_path)
         except (
             json.JSONDecodeError,
             UnicodeDecodeError,
@@ -288,6 +320,12 @@ class FileSystemStorageAdapter:
         if current != expected_generation:
             raise StaleGenerationError(current)
 
+        for record_path, payload in publication.evidence_records.items():
+            destination = self._package / _evidence_record_path(record_path)
+            _write_durable(destination, payload)
+        if publication.evidence_records:
+            _sync_directory(self._package / "evidence" / "records")
+
         staging = self._package / "staging"
         generations = self._package / "generations"
         staged_generation = staging / publication.generation_id
@@ -329,6 +367,11 @@ class FileSystemStorageAdapter:
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 
             _write_durable(temporary / "LOCK", b"")
+
+            for record_path, payload in publication.evidence_records.items():
+                _write_durable(temporary / _evidence_record_path(record_path), payload)
+            if publication.evidence_records:
+                _sync_directory(evidence_records)
 
             staged_generation = staging / publication.generation_id
             self._stage_generation(publication, staged_generation)

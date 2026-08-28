@@ -45,7 +45,6 @@ from topo.models import (
     SourceImportRequest,
     SourceRecordEvidenceRecord,
     SourceReference,
-    SourceTransactionRecord,
     UserStatementEvidenceRecord,
     ValidTime,
 )
@@ -183,6 +182,10 @@ class EngineCore:
             ),
             validated.manifest.modules,
         )
+        preview = self._source_import_preview(validated, request)
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        self._validate_authorization(request.authorization, preview)
 
         now = self._now()
         entities = list(validated.entities.records)
@@ -191,13 +194,15 @@ class EngineCore:
         proposals = list(validated.proposals.records)
         evidence_refs: list[Ref] = []
         transaction_refs: list[Ref] = []
+        source_records: dict[str, bytes] = {}
         imported = 0
 
         for record in request.records:
             prior = self._latest_source_evidence(
                 tuple(evidence), request.adapter.adapter_id, record
             )
-            checksum = self._source_record_checksum(record)
+            record_payload = self._source_record_bytes(record)
+            checksum = "sha256:" + hashlib.sha256(record_payload).hexdigest()
             if prior is not None and prior.source.record_checksum == checksum:
                 transaction_id = self._transaction_for_evidence(
                     tuple(assertions), prior.id
@@ -221,6 +226,7 @@ class EngineCore:
                     )
                 )
             evidence_id = self._id_factory()
+            record_path = f"evidence/records/{evidence_id}.json"
             source_evidence = SourceRecordEvidenceRecord(
                 id=evidence_id,
                 evidence_type="source_record",
@@ -231,15 +237,12 @@ class EngineCore:
                     record_id=record.record_id,
                     record_checksum=checksum,
                 ),
-                record=SourceTransactionRecord(
-                    booking_date=record.booking_date,
-                    money=record.money,
-                    description=record.description,
-                ),
+                record_path=record_path,
                 recorded_at=now,
                 supersedes=prior.id if prior is not None else None,
             )
             evidence.append(source_evidence)
+            source_records[record_path] = record_payload
             if prior is not None:
                 proposals = [
                     proposal.model_copy(update={"status": "superseded"})
@@ -313,14 +316,6 @@ class EngineCore:
                 ref.model_dump(mode="json") for ref in transaction_refs
             ],
         }
-        if imported == 0:
-            return MutationOutcome(
-                context_id=request.context_id,
-                generation_before=validated.manifest.generation_id,
-                generation_after=validated.manifest.generation_id,
-                outcome="no_change",
-                result=result,
-            )
         mutation_id = self._id_factory()
         generation_id = self._id_factory()
         publication = self._build_update_publication(
@@ -333,6 +328,7 @@ class EngineCore:
             assertions=tuple(assertions),
             evidence=tuple(evidence),
             proposals=tuple(proposals),
+            source_records=source_records,
             result=result,
             now=now,
         )
@@ -717,14 +713,39 @@ class EngineCore:
         return next((item for item in matching if item.id not in superseded_ids), None)
 
     @staticmethod
-    def _source_record_checksum(record: SourceImportRecord) -> str:
-        payload = json.dumps(
-            record.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return "sha256:" + hashlib.sha256(payload).hexdigest()
+    def _source_record_bytes(record: SourceImportRecord) -> bytes:
+        return _json_bytes(record)
+
+    def _source_import_preview(
+        self, validated: ValidatedPackage, request: SourceImportRequest
+    ) -> JsonObject:
+        effects: list[JsonValue] = []
+        for record in request.records:
+            prior = self._latest_source_evidence(
+                validated.evidence.records, request.adapter.adapter_id, record
+            )
+            checksum = (
+                "sha256:"
+                + hashlib.sha256(self._source_record_bytes(record)).hexdigest()
+            )
+            if prior is None:
+                action = "create_source_transaction"
+            elif prior.source.record_checksum == checksum:
+                action = "retain_source_transaction"
+            else:
+                action = "correct_source_transaction"
+            effects.append(
+                {
+                    "action": action,
+                    "source_id": record.source_id,
+                    "record_id": record.record_id,
+                }
+            )
+        basis = request.model_dump(mode="json", exclude={"authorization"})
+        digest = hashlib.sha256(
+            json.dumps(basis, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {"preview_ref": f"preview:sha256:{digest}", "effects": effects}
 
     @staticmethod
     def _transaction_for_evidence(
@@ -820,6 +841,7 @@ class EngineCore:
         assertions: tuple[AssertionRecord, ...] | None = None,
         evidence: tuple[EvidenceRecord, ...] | None = None,
         proposals: tuple[ProposalRecord, ...] | None = None,
+        source_records: dict[str, bytes] | None = None,
     ) -> PackageCommit:
         collections = {
             "entities.json": _json_bytes(
@@ -901,12 +923,17 @@ class EngineCore:
                 "manifest.json": _json_bytes(manifest),
             },
             journal=_json_bytes(journal),
+            evidence_records=source_records or {},
         )
         load_and_validate_generation(
             StoredPackageSnapshot(
                 current_generation=generation_id,
                 generation_files=publication.generation_files,
                 journal=publication.journal,
+                evidence_records={
+                    **validated.source_records,
+                    **publication.evidence_records,
+                },
             )
         )
         return publication

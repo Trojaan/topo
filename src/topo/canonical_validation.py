@@ -21,6 +21,8 @@ from topo.models import (
     JsonObject,
     Manifest,
     ProposalRecord,
+    SourceImportRecord,
+    SourceRecordEvidenceRecord,
 )
 from topo.storage import StoredPackageSnapshot
 
@@ -66,6 +68,19 @@ def _ref() -> JsonObject:
             "id": _uuid7(),
         },
     }
+
+
+def _validate_acyclic_lineage(
+    predecessors: dict[str, str], *, description: str
+) -> None:
+    for start in predecessors:
+        seen: set[str] = set()
+        current: str | None = start
+        while current is not None:
+            if current in seen:
+                raise PackageIntegrityError(f"{description} lineage contains a cycle")
+            seen.add(current)
+            current = predecessors.get(current)
 
 
 def _assertion_schema() -> JsonObject:
@@ -162,7 +177,7 @@ def _evidence_schema() -> JsonObject:
             "id",
             "evidence_type",
             "source",
-            "record",
+            "record_path",
             "recorded_at",
             "supersedes",
         ],
@@ -190,29 +205,9 @@ def _evidence_schema() -> JsonObject:
                     },
                 },
             },
-            "record": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["booking_date", "money", "description"],
-                "properties": {
-                    "booking_date": {"type": "string", "format": "date"},
-                    "money": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["amount", "currency"],
-                        "properties": {
-                            "amount": {
-                                "type": "string",
-                                "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
-                            },
-                            "currency": {
-                                "type": "string",
-                                "pattern": r"^[A-Z]{3}$",
-                            },
-                        },
-                    },
-                    "description": {"type": "string"},
-                },
+            "record_path": {
+                "type": "string",
+                "pattern": r"^evidence/records/[0-9a-f-]+\.json$",
             },
             "recorded_at": {"type": "string", "format": "date-time"},
             "supersedes": {"oneOf": [_uuid7(), {"type": "null"}]},
@@ -438,6 +433,7 @@ class ValidatedPackage:
     evidence: CanonicalCollection[EvidenceRecord]
     proposals: CanonicalCollection[ProposalRecord]
     journal: Journal
+    source_records: dict[str, bytes]
     initialization_result: ContextInitResult
 
 
@@ -497,8 +493,8 @@ def _validate_snapshot(
 
     entity_ids = {record.id for record in entities.records}
     evidence_ids = {record.id for record in evidence.records}
+    evidence_by_id = {record.id: record for record in evidence.records}
     proposal_ids = {record.id for record in proposals.records}
-    assertion_ids = {record.id for record in assertions.records}
     for assertion in assertions.records:
         if assertion.subject_ref.ref_type != "entity":
             raise PackageIntegrityError("assertion subject has an invalid ref type")
@@ -516,19 +512,91 @@ def _validate_snapshot(
             for ref in assertion.provenance
         ):
             raise PackageIntegrityError("assertion provenance does not resolve")
-        if (
-            assertion.supersedes is not None
-            and assertion.supersedes not in assertion_ids
-        ):
-            raise PackageIntegrityError("superseded assertion does not resolve")
+        if assertion.supersedes is not None:
+            predecessor = next(
+                (
+                    candidate
+                    for candidate in assertions.records
+                    if candidate.id == assertion.supersedes
+                ),
+                None,
+            )
+            if (
+                predecessor is None
+                or predecessor.id == assertion.id
+                or predecessor.subject_ref != assertion.subject_ref
+                or predecessor.predicate != assertion.predicate
+            ):
+                raise PackageIntegrityError("assertion successor lineage is invalid")
 
-    superseded_evidence_ids = {
+    assertion_successors = [
+        assertion.supersedes
+        for assertion in assertions.records
+        if assertion.supersedes is not None
+    ]
+    if len(assertion_successors) != len(set(assertion_successors)):
+        raise PackageIntegrityError("assertion has multiple direct successors")
+    _validate_acyclic_lineage(
+        {
+            assertion.id: assertion.supersedes
+            for assertion in assertions.records
+            if assertion.supersedes is not None
+        },
+        description="assertion successor",
+    )
+
+    source_records: dict[str, bytes] = {}
+    for record in evidence.records:
+        if not isinstance(record, SourceRecordEvidenceRecord):
+            continue
+        expected_path = f"evidence/records/{record.id}.json"
+        if record.record_path != expected_path:
+            raise PackageIntegrityError(
+                "source evidence record_path does not match its id"
+            )
+        payload = snapshot.evidence_records.get(record.record_path)
+        if payload is None:
+            raise PackageIntegrityError("source evidence record does not resolve")
+        checksum = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if checksum != record.source.record_checksum:
+            raise PackageIntegrityError("source evidence checksum does not match")
+        source_record = SourceImportRecord.model_validate_json(payload, strict=True)
+        if (
+            source_record.source_id != record.source.source_id
+            or source_record.record_id != record.source.record_id
+        ):
+            raise PackageIntegrityError("source evidence identity does not match")
+        source_records[record.record_path] = payload
+        if record.supersedes is not None:
+            evidence_predecessor = evidence_by_id.get(record.supersedes)
+            if (
+                not isinstance(evidence_predecessor, SourceRecordEvidenceRecord)
+                or evidence_predecessor.id == record.id
+                or evidence_predecessor.source.adapter_id != record.source.adapter_id
+                or evidence_predecessor.source.source_id != record.source.source_id
+                or evidence_predecessor.source.record_id != record.source.record_id
+            ):
+                raise PackageIntegrityError(
+                    "source evidence successor lineage is invalid"
+                )
+
+    evidence_successors = [
         record.supersedes
         for record in evidence.records
-        if record.evidence_type == "source_record" and record.supersedes is not None
-    }
-    if not superseded_evidence_ids <= evidence_ids:
-        raise PackageIntegrityError("superseded evidence does not resolve")
+        if isinstance(record, SourceRecordEvidenceRecord)
+        and record.supersedes is not None
+    ]
+    if len(evidence_successors) != len(set(evidence_successors)):
+        raise PackageIntegrityError("source evidence has multiple direct successors")
+    _validate_acyclic_lineage(
+        {
+            record.id: record.supersedes
+            for record in evidence.records
+            if isinstance(record, SourceRecordEvidenceRecord)
+            and record.supersedes is not None
+        },
+        description="source evidence successor",
+    )
 
     for proposal in proposals.records:
         if proposal.proposed_assertion.subject_ref.ref_type != "entity":
@@ -549,6 +617,14 @@ def _validate_snapshot(
     entities_by_type: dict[str, list[EntityRecord]] = {}
     for entity in entities.records:
         entities_by_type.setdefault(entity.entity_type, []).append(entity)
+        expected_module = {
+            "context": "topo.core",
+            "person": "domain.parties",
+            "household": "domain.parties",
+            "transaction": "domain.cashflow",
+        }[entity.entity_type]
+        if entity.module_id != expected_module:
+            raise PackageIntegrityError("entity type has an invalid owning module")
     for entity_type in ("context", "person", "household"):
         if len(entities_by_type.get(entity_type, [])) != 1:
             raise PackageIntegrityError(
@@ -611,6 +687,7 @@ def _validate_snapshot(
         evidence=evidence,
         proposals=proposals,
         journal=journal,
+        source_records=source_records,
         initialization_result=result,
     )
 
@@ -638,6 +715,7 @@ def load_and_validate_generation(
                         current_generation=generation_id,
                         generation_files=generation_files,
                         journal=snapshot.journal,
+                        evidence_records=snapshot.evidence_records,
                     ),
                     require_journal_tip=False,
                 )

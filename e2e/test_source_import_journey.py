@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 
 def run_topo(
@@ -27,6 +30,62 @@ def parse_json(process: subprocess.CompletedProcess[str]) -> dict[str, Any]:
 def current_generation(package: Path) -> tuple[str, Path]:
     generation_id = (package / "CURRENT").read_text(encoding="utf-8").strip()
     return generation_id, package / "generations" / generation_id
+
+
+def rewrite_collection(generation: Path, filename: str, value: dict[str, Any]) -> None:
+    payload = (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    (generation / filename).write_bytes(payload)
+    manifest_path = generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][filename] = "sha256:" + hashlib.sha256(payload).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def import_with_authorization(
+    package: Path,
+    request: dict[str, Any],
+    *extra_arguments: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    generation_before = current_generation(package)[0]
+    preview_process = run_topo(
+        "source",
+        "import",
+        "--package",
+        str(package),
+        *extra_arguments,
+        "--json",
+        request={**request, "authorization": None},
+    )
+    assert preview_process.returncode == 0, preview_process.stderr
+    preview = parse_json(preview_process)
+    assert preview["outcome"] == "requires_authorization"
+    assert preview["generation_before"] == generation_before
+    assert preview["generation_after"] == generation_before
+    assert current_generation(package)[0] == generation_before
+    authorized_request = {
+        **request,
+        "authorization": {
+            "preview_ref": preview["result"]["preview_ref"],
+            "authorized_by": {"actor_type": "human", "actor_id": "local-user"},
+            "authorized_at": "2026-08-28T12:00:00+02:00",
+        },
+    }
+    imported_process = run_topo(
+        "source",
+        "import",
+        "--package",
+        str(package),
+        *extra_arguments,
+        "--json",
+        request=authorized_request,
+    )
+    assert imported_process.returncode == 0, imported_process.stderr
+    return parse_json(imported_process), authorized_request
 
 
 def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
@@ -60,11 +119,7 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
         ],
     }
 
-    imported_process = run_topo(
-        "source", "import", "--package", str(package), "--json", request=request
-    )
-    assert imported_process.returncode == 0, imported_process.stderr
-    imported = parse_json(imported_process)
+    imported, authorized_request = import_with_authorization(package, request)
     assert imported["outcome"] == "succeeded"
     assert imported["result"]["imported"] == 1
     assert len(imported["result"]["transaction_refs"]) == 1
@@ -98,10 +153,27 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
         "record_id": "2026-07-25:salary",
         "record_checksum": source_evidence["source"]["record_checksum"],
     }
-    assert source_evidence["record"] == {
+    assert source_evidence["record_path"] == f"evidence/records/{evidence_id}.json"
+    source_record = json.loads(
+        (package / source_evidence["record_path"]).read_text(encoding="utf-8")
+    )
+    assert source_evidence["source"]["record_checksum"] == (
+        "sha256:"
+        + hashlib.sha256(
+            (package / source_evidence["record_path"]).read_bytes()
+        ).hexdigest()
+    )
+    assert source_record == {
+        "source_id": "main-account",
+        "record_id": "2026-07-25:salary",
         "booking_date": "2026-07-25",
         "money": {"amount": "3200.00", "currency": "EUR"},
         "description": "SALARY ACME",
+        "source_classification": {
+            "category": "Inkomen",
+            "rule_version": "tally-rules-17",
+            "explanation": "Matched employer rule",
+        },
     }
     literal_values = {
         record["predicate"]: record["object_value"]
@@ -146,7 +218,12 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
     }
 
     replay_process = run_topo(
-        "source", "import", "--package", str(package), "--json", request=request
+        "source",
+        "import",
+        "--package",
+        str(package),
+        "--json",
+        request=authorized_request,
     )
     assert replay_process.returncode == 0, replay_process.stderr
     replay = parse_json(replay_process)
@@ -187,11 +264,7 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
             }
         ],
     }
-    first = parse_json(
-        run_topo(
-            "source", "import", "--package", str(package), "--json", request=request
-        )
-    )
+    first, _ = import_with_authorization(package, request)
     transaction_ref = first["result"]["transaction_refs"][0]
     old_evidence_ref = first["result"]["evidence_refs"][0]
     _, first_generation = current_generation(package)
@@ -209,11 +282,26 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
         ]
         if item["subject_ref"]["id"] == transaction_ref["id"]
     }
+    duplicate_request = {
+        **request,
+        "operation_id": "0198f1a0-0000-7000-8000-000000000113",
+        "expected_generation": first["generation_after"],
+        "reason": "Import an unchanged statement under a new operation",
+    }
+    duplicate, duplicate_authorized = import_with_authorization(
+        package, duplicate_request
+    )
+    assert duplicate["outcome"] == "succeeded"
+    assert duplicate["result"] == {
+        "imported": 0,
+        "evidence_refs": [old_evidence_ref],
+        "transaction_refs": [transaction_ref],
+    }
 
     correction_request = {
         **request,
         "operation_id": "0198f1a0-0000-7000-8000-000000000112",
-        "expected_generation": first["generation_after"],
+        "expected_generation": duplicate["generation_after"],
         "reason": "Import corrected statement line",
         "records": [
             {
@@ -228,16 +316,7 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
             }
         ],
     }
-    corrected_process = run_topo(
-        "source",
-        "import",
-        "--package",
-        str(package),
-        "--json",
-        request=correction_request,
-    )
-    assert corrected_process.returncode == 0, corrected_process.stderr
-    corrected = parse_json(corrected_process)
+    corrected, _ = import_with_authorization(package, correction_request)
     assert corrected["outcome"] == "succeeded"
     assert corrected["result"]["transaction_refs"] == [transaction_ref]
     new_evidence_id = corrected["result"]["evidence_refs"][0]["id"]
@@ -247,7 +326,10 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
     assert old_evidence in evidence
     successor = next(item for item in evidence if item["id"] == new_evidence_id)
     assert successor["supersedes"] == old_evidence_ref["id"]
-    assert successor["record"]["money"]["amount"] == "3250.00"
+    successor_record = json.loads(
+        (package / successor["record_path"]).read_text(encoding="utf-8")
+    )
+    assert successor_record["money"]["amount"] == "3250.00"
     assertions = json.loads((generation / "assertions.json").read_text())["records"]
     for predicate, old_assertion in old_assertions.items():
         assert old_assertion in assertions
@@ -270,3 +352,135 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
         proposals[1]["proposed_assertion"]["object_value"]["value"]["category"]
         == "Income"
     )
+
+    corrected_generation = corrected["generation_after"]
+    duplicate_replay = parse_json(
+        run_topo(
+            "source",
+            "import",
+            "--package",
+            str(package),
+            "--json",
+            request=duplicate_authorized,
+        )
+    )
+    assert duplicate_replay["outcome"] == "no_change"
+    assert duplicate_replay["result"] == duplicate["result"]
+    assert duplicate_replay["generation_after"] == corrected_generation
+    assert current_generation(package)[0] == corrected_generation
+
+
+def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> None:
+    package = tmp_path / "csv-transactions.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    csv_path = tmp_path / "transactions.csv"
+    csv_path.write_text(
+        "source_id,record_id,booking_date,amount,currency,description,category,rule_version,explanation\n"
+        "main-account,line-1,2026-07-25,3200.00,EUR,SALARY ACME,Income,rules-1,Employer match\n",
+        encoding="utf-8",
+    )
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": "0198f1a0-0000-7000-8000-000000000121",
+        "context_id": initialized["context_id"],
+        "expected_generation": initialized["generation_after"],
+        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.csv"},
+        "reason": "Import normalized CSV",
+        "adapter": {"adapter_id": "adapter.csv", "adapter_version": "1.0.0"},
+    }
+
+    imported, authorized_request = import_with_authorization(
+        package, request, "--records-csv", str(csv_path)
+    )
+
+    assert imported["outcome"] == "succeeded"
+    assert imported["result"]["imported"] == 1
+    normalized = imported["trace"]["normalized_request"]
+    assert normalized["records"] == [
+        {
+            "source_id": "main-account",
+            "record_id": "line-1",
+            "booking_date": "2026-07-25",
+            "money": {"amount": "3200.00", "currency": "EUR"},
+            "description": "SALARY ACME",
+            "source_classification": {
+                "category": "Income",
+                "rule_version": "rules-1",
+                "explanation": "Employer match",
+            },
+        }
+    ]
+    assert "records" not in authorized_request
+
+
+@pytest.mark.parametrize("invalid_lineage", ["assertion_self", "evidence_type"])
+def test_invalid_source_successor_lineage_blocks_package_reads(
+    tmp_path: Path, invalid_lineage: str
+) -> None:
+    package = tmp_path / f"invalid-{invalid_lineage}.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": "0198f1a0-0000-7000-8000-000000000131",
+        "context_id": initialized["context_id"],
+        "expected_generation": initialized["generation_after"],
+        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.test"},
+        "reason": "Import one source record",
+        "adapter": {"adapter_id": "adapter.test", "adapter_version": "1.0.0"},
+        "records": [
+            {
+                "source_id": "account",
+                "record_id": "line-1",
+                "booking_date": "2026-07-25",
+                "money": {"amount": "10.00", "currency": "EUR"},
+                "description": "TEST",
+            }
+        ],
+    }
+    _, authorized_request = import_with_authorization(package, request)
+    _, generation = current_generation(package)
+    if invalid_lineage == "assertion_self":
+        assertions = json.loads(
+            (generation / "assertions.json").read_text(encoding="utf-8")
+        )
+        transaction_assertion = next(
+            item
+            for item in assertions["records"]
+            if item["predicate"] == "domain.cashflow/booking_date"
+        )
+        transaction_assertion["supersedes"] = transaction_assertion["id"]
+        rewrite_collection(generation, "assertions.json", assertions)
+    else:
+        evidence = json.loads(
+            (generation / "evidence.json").read_text(encoding="utf-8")
+        )
+        user_evidence = next(
+            item
+            for item in evidence["records"]
+            if item["evidence_type"] == "user_statement"
+        )
+        source_evidence = next(
+            item
+            for item in evidence["records"]
+            if item["evidence_type"] == "source_record"
+        )
+        source_evidence["supersedes"] = user_evidence["id"]
+        rewrite_collection(generation, "evidence.json", evidence)
+
+    rejected = run_topo(
+        "source",
+        "import",
+        "--package",
+        str(package),
+        "--json",
+        request=authorized_request,
+    )
+
+    assert rejected.returncode == 2
+    body = parse_json(rejected)
+    assert body["diagnostics"][0]["code"] == "PACKAGE_INTEGRITY_FAILED"
+    assert body["generation_after"] is None

@@ -108,17 +108,11 @@ class SourceReference(TopoModel):
     record_checksum: Checksum
 
 
-class SourceTransactionRecord(TopoModel):
-    booking_date: date
-    money: Money
-    description: str
-
-
 class SourceRecordEvidenceRecord(TopoModel):
     id: UUID7
     evidence_type: Literal["source_record"]
     source: SourceReference
-    record: SourceTransactionRecord
+    record_path: NonEmptyString
     recorded_at: AwareDatetime
     supersedes: UUID7 | None
 
@@ -292,6 +286,7 @@ class SourceImportRecord(TopoModel):
 class SourceImportRequest(MutationRequest):
     adapter: SourceAdapter
     records: tuple[SourceImportRecord, ...]
+    authorization: Authorization | None
 
     @model_validator(mode="after")
     def authorized_unique_records(self) -> SourceImportRequest:

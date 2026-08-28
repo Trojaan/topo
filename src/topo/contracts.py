@@ -29,12 +29,7 @@ COMMANDS = (
 )
 SCHEMA_COMMANDS = (
     *COMMANDS,
-    "source.import",
     "discover.run",
-    "proposal.submit",
-    "proposal.confirm",
-    "proposal.correct",
-    "proposal.reject",
     "validate",
     "analyze.run",
     "explain",
@@ -256,9 +251,10 @@ def _mutation_input(command: str) -> SchemaObject:
                         ),
                     ),
                 },
+                "authorization": {"oneOf": [_authorization(), {"type": "null"}]},
             }
         )
-        required.extend(["adapter", "records"])
+        required.extend(["adapter", "records", "authorization"])
     if command == "proposal.submit":
         properties["proposal"] = _closed_object(
             {
