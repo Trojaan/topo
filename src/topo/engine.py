@@ -79,6 +79,15 @@ def _json_bytes(value: BaseModel) -> bytes:
     ).encode("utf-8")
 
 
+def _evidence_inventory_bytes(paths: tuple[str, ...]) -> bytes:
+    return (
+        json.dumps(
+            {"paths": sorted(paths)}, ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 class EngineCore:
     """Own generation, validation, history, and replay semantics."""
 
@@ -843,6 +852,9 @@ class EngineCore:
         proposals: tuple[ProposalRecord, ...] | None = None,
         source_records: dict[str, bytes] | None = None,
     ) -> PackageCommit:
+        inventory_payload = _evidence_inventory_bytes(
+            tuple({*validated.source_records, *(source_records or {})})
+        )
         collections = {
             "entities.json": _json_bytes(
                 CanonicalCollection[EntityRecord](
@@ -924,6 +936,7 @@ class EngineCore:
             },
             journal=_json_bytes(journal),
             evidence_records=source_records or {},
+            evidence_inventory=inventory_payload,
         )
         load_and_validate_generation(
             StoredPackageSnapshot(
@@ -1034,6 +1047,7 @@ class EngineCore:
             schema_version="topo.context/0.1",
             records=(),
         )
+        inventory_payload = _evidence_inventory_bytes(())
         collections = {
             "entities.json": _json_bytes(entities),
             "assertions.json": _json_bytes(assertions),
@@ -1087,4 +1101,5 @@ class EngineCore:
                 "manifest.json": _json_bytes(manifest),
             },
             journal=_json_bytes(journal),
+            evidence_inventory=inventory_payload,
         )

@@ -370,7 +370,6 @@ COLLECTION_SCHEMAS = {
     "proposals.json": _collection_schema(_proposal_schema()),
 }
 
-
 MANIFEST_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",

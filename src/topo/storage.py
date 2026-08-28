@@ -30,6 +30,7 @@ class PackageCommit:
     generation_files: dict[str, bytes]
     journal: bytes
     evidence_records: dict[str, bytes] = field(default_factory=dict)
+    evidence_inventory: bytes = b'{"paths":[]}\n'
 
 
 class StorageAdapter(Protocol):
@@ -127,24 +128,44 @@ def _referenced_evidence_record_paths(
     package: Path, published_generation_ids: set[str]
 ) -> set[str]:
     referenced: set[str] = set()
+    inventory_directory = package / "history" / "evidence-inventory"
+    if inventory_directory.is_symlink() or not inventory_directory.is_dir():
+        raise ValueError("evidence inventory must be a real directory")
     for generation_id in published_generation_ids:
-        evidence = _json_object(
-            (package / "generations" / generation_id / "evidence.json").read_bytes()
+        matches = tuple(
+            path
+            for path in inventory_directory.iterdir()
+            if path.name.startswith(generation_id + "-") and path.name.endswith(".json")
         )
-        records = evidence.get("records")
-        if not isinstance(records, list):
-            raise TypeError("evidence collection has no records")
-        for record in records:
-            if not isinstance(record, dict):
-                raise TypeError("evidence collection contains a non-object")
-            record_path = record.get("record_path")
-            if record_path is None:
-                continue
-            if not isinstance(record_path, str):
-                raise TypeError("evidence record_path is invalid")
-            _evidence_record_path(record_path)
-            referenced.add(record_path)
+        if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file():
+            raise ValueError("published generation has no unique evidence inventory")
+        inventory_path = matches[0]
+        inventory_payload = inventory_path.read_bytes()
+        checksum = hashlib.sha256(inventory_payload).hexdigest()
+        if inventory_path.name != f"{generation_id}-{checksum}.json":
+            raise ValueError("evidence inventory checksum mismatch")
+        referenced.update(_validate_evidence_inventory(inventory_payload))
     return referenced
+
+
+def _validate_evidence_inventory(payload: bytes) -> tuple[str, ...]:
+    inventory = _json_object(payload)
+    if set(inventory) != {"paths"}:
+        raise ValueError("evidence inventory shape is invalid")
+    paths = inventory["paths"]
+    if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        raise TypeError("evidence inventory paths are invalid")
+    typed_paths = cast(list[str], paths)
+    if typed_paths != sorted(set(typed_paths)):
+        raise ValueError("evidence inventory paths must be unique and sorted")
+    for record_path in typed_paths:
+        _evidence_record_path(record_path)
+    return tuple(typed_paths)
+
+
+def _evidence_inventory_filename(generation_id: str, payload: bytes) -> str:
+    checksum = hashlib.sha256(payload).hexdigest()
+    return f"{generation_id}-{checksum}.json"
 
 
 def _remove_artifact(path: Path) -> None:
@@ -217,6 +238,7 @@ class FileSystemStorageAdapter:
                 publication.generation_id, publication.generation_files
             )
             self._validate_journal_tip(publication.journal, publication.generation_id)
+            _validate_evidence_inventory(publication.evidence_inventory)
             for record_path in publication.evidence_records:
                 _evidence_record_path(record_path)
         except (
@@ -323,6 +345,16 @@ class FileSystemStorageAdapter:
         _sync_directory(generations)
 
         try:
+            inventory_directory = history / "evidence-inventory"
+            if inventory_directory.is_symlink() or not inventory_directory.is_dir():
+                return False
+            for artifact in inventory_directory.iterdir():
+                if not any(
+                    artifact.name.startswith(generation_id + "-")
+                    for generation_id in published
+                ):
+                    _remove_artifact(artifact)
+            _sync_directory(inventory_directory)
             referenced_evidence = _referenced_evidence_record_paths(
                 self._package, published
             )
@@ -366,9 +398,15 @@ class FileSystemStorageAdapter:
         generations = self._package / "generations"
         staged_generation = staging / publication.generation_id
         staged_evidence = staging / f"{publication.generation_id}.evidence"
+        staged_inventory = staging / f"{publication.generation_id}.evidence-inventory"
+        inventory_directory = self._package / "history" / "evidence-inventory"
+        published_inventory = inventory_directory / _evidence_inventory_filename(
+            publication.generation_id, publication.evidence_inventory
+        )
         published_evidence: list[Path] = []
         current_switched = False
         try:
+            _write_durable(staged_inventory, publication.evidence_inventory)
             if publication.evidence_records:
                 staged_evidence.mkdir(mode=0o700)
                 for record_path, payload in publication.evidence_records.items():
@@ -378,6 +416,8 @@ class FileSystemStorageAdapter:
             self._stage_generation(publication, staged_generation)
             os.replace(staged_generation, generations / publication.generation_id)
             _sync_directory(generations)
+            os.replace(staged_inventory, published_inventory)
+            _sync_directory(inventory_directory)
 
             for record_path in publication.evidence_records:
                 relative = _evidence_record_path(record_path)
@@ -409,12 +449,20 @@ class FileSystemStorageAdapter:
                 shutil.rmtree(staged_generation)
             if staged_evidence.exists():
                 shutil.rmtree(staged_evidence)
+            if staged_inventory.exists():
+                staged_inventory.unlink()
             if not current_switched:
                 for evidence_path in published_evidence:
                     if evidence_path.exists() and not evidence_path.is_symlink():
                         evidence_path.unlink()
                 if published_evidence:
                     _sync_directory(self._package / "evidence" / "records")
+                if (
+                    published_inventory.exists()
+                    and not published_inventory.is_symlink()
+                ):
+                    published_inventory.unlink()
+                    _sync_directory(inventory_directory)
 
     def _publish_initial(self, publication: PackageCommit) -> None:
         parent = self._package.parent
@@ -427,7 +475,14 @@ class FileSystemStorageAdapter:
             staging = temporary / "staging"
             evidence_records = temporary / "evidence" / "records"
             history = temporary / "history"
-            for directory in (generations, staging, evidence_records, history):
+            inventory_directory = history / "evidence-inventory"
+            for directory in (
+                generations,
+                staging,
+                evidence_records,
+                history,
+                inventory_directory,
+            ):
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 
             _write_durable(temporary / "LOCK", b"")
@@ -442,6 +497,14 @@ class FileSystemStorageAdapter:
 
             os.replace(staged_generation, generations / publication.generation_id)
             _sync_directory(generations)
+            _write_durable(
+                inventory_directory
+                / _evidence_inventory_filename(
+                    publication.generation_id, publication.evidence_inventory
+                ),
+                publication.evidence_inventory,
+            )
+            _sync_directory(inventory_directory)
             _write_durable(history / "journal.json", publication.journal)
             _sync_directory(history)
 

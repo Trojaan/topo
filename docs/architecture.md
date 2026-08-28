@@ -22,7 +22,8 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
-  atomic publication, and crash recovery.
+  atomic publication, and crash recovery. Its checksummed evidence inventory
+  contains opaque paths only; canonical validation remains an engine concern.
 
 ## Dependency direction
 

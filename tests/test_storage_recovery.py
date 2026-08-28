@@ -125,6 +125,10 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
         package / "evidence" / "records" / "0198f1a0-0000-7000-8000-000000000098.json"
     )
     orphan_evidence.write_text('{"sensitive":"orphaned"}\n', encoding="utf-8")
+    orphan_inventory = (
+        package / "history" / "evidence-inventory" / f"{orphan_id}-{'0' * 64}.json"
+    )
+    orphan_inventory.write_text('{"paths":[]}\n', encoding="utf-8")
 
     snapshot = FileSystemStorageAdapter(package).load()
 
@@ -133,6 +137,7 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     assert (package / "CURRENT").read_text(encoding="utf-8").strip() == current_id
     assert not orphan_path.exists()
     assert not orphan_evidence.exists()
+    assert not orphan_inventory.exists()
     assert list((package / "staging").iterdir()) == []
     assert {
         path.name: path.read_bytes() for path in current_path.iterdir()
