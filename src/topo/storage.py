@@ -123,6 +123,30 @@ def _read_evidence_records(package: Path) -> dict[str, bytes]:
     return result
 
 
+def _referenced_evidence_record_paths(
+    package: Path, published_generation_ids: set[str]
+) -> set[str]:
+    referenced: set[str] = set()
+    for generation_id in published_generation_ids:
+        evidence = _json_object(
+            (package / "generations" / generation_id / "evidence.json").read_bytes()
+        )
+        records = evidence.get("records")
+        if not isinstance(records, list):
+            raise TypeError("evidence collection has no records")
+        for record in records:
+            if not isinstance(record, dict):
+                raise TypeError("evidence collection contains a non-object")
+            record_path = record.get("record_path")
+            if record_path is None:
+                continue
+            if not isinstance(record_path, str):
+                raise TypeError("evidence record_path is invalid")
+            _evidence_record_path(record_path)
+            referenced.add(record_path)
+    return referenced
+
+
 def _remove_artifact(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -298,6 +322,24 @@ class FileSystemStorageAdapter:
                 _remove_artifact(artifact)
         _sync_directory(generations)
 
+        try:
+            referenced_evidence = _referenced_evidence_record_paths(
+                self._package, published
+            )
+            evidence_records = self._package / "evidence" / "records"
+            if evidence_records.is_symlink() or not evidence_records.is_dir():
+                return False
+            for artifact in evidence_records.iterdir():
+                if artifact.is_symlink() or not artifact.is_file():
+                    return False
+                record_path = str(artifact.relative_to(self._package))
+                _evidence_record_path(record_path)
+                if record_path not in referenced_evidence:
+                    artifact.unlink()
+            _sync_directory(evidence_records)
+        except (OSError, TypeError, ValueError):
+            return False
+
         for temporary in (self._package / ".CURRENT.tmp", journal_tmp):
             if temporary.exists() or temporary.is_symlink():
                 _remove_artifact(temporary)
@@ -320,19 +362,32 @@ class FileSystemStorageAdapter:
         if current != expected_generation:
             raise StaleGenerationError(current)
 
-        for record_path, payload in publication.evidence_records.items():
-            destination = self._package / _evidence_record_path(record_path)
-            _write_durable(destination, payload)
-        if publication.evidence_records:
-            _sync_directory(self._package / "evidence" / "records")
-
         staging = self._package / "staging"
         generations = self._package / "generations"
         staged_generation = staging / publication.generation_id
+        staged_evidence = staging / f"{publication.generation_id}.evidence"
+        published_evidence: list[Path] = []
+        current_switched = False
         try:
+            if publication.evidence_records:
+                staged_evidence.mkdir(mode=0o700)
+                for record_path, payload in publication.evidence_records.items():
+                    relative = _evidence_record_path(record_path)
+                    _write_durable(staged_evidence / relative.name, payload)
+                _sync_directory(staged_evidence)
             self._stage_generation(publication, staged_generation)
             os.replace(staged_generation, generations / publication.generation_id)
             _sync_directory(generations)
+
+            for record_path in publication.evidence_records:
+                relative = _evidence_record_path(record_path)
+                destination = self._package / relative
+                if destination.exists() or destination.is_symlink():
+                    raise FileExistsError(str(destination))
+                os.replace(staged_evidence / relative.name, destination)
+                published_evidence.append(destination)
+            if published_evidence:
+                _sync_directory(self._package / "evidence" / "records")
 
             current = (self._package / "CURRENT").read_text(encoding="utf-8").strip()
             if current != expected_generation:
@@ -345,12 +400,21 @@ class FileSystemStorageAdapter:
                 current_tmp, (publication.generation_id + "\n").encode("ascii")
             )
             os.replace(current_tmp, self._package / "CURRENT")
+            current_switched = True
             _sync_directory(self._package)
             os.replace(journal_tmp, self._package / "history" / "journal.json")
             _sync_directory(self._package / "history")
         finally:
             if staged_generation.exists():
                 shutil.rmtree(staged_generation)
+            if staged_evidence.exists():
+                shutil.rmtree(staged_evidence)
+            if not current_switched:
+                for evidence_path in published_evidence:
+                    if evidence_path.exists() and not evidence_path.is_symlink():
+                        evidence_path.unlink()
+                if published_evidence:
+                    _sync_directory(self._package / "evidence" / "records")
 
     def _publish_initial(self, publication: PackageCommit) -> None:
         parent = self._package.parent

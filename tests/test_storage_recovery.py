@@ -121,6 +121,10 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     shutil.copytree(orphan_path, complete_staging)
     incomplete_staging.mkdir()
     (incomplete_staging / "entities.json").write_text("{}", encoding="utf-8")
+    orphan_evidence = (
+        package / "evidence" / "records" / "0198f1a0-0000-7000-8000-000000000098.json"
+    )
+    orphan_evidence.write_text('{"sensitive":"orphaned"}\n', encoding="utf-8")
 
     snapshot = FileSystemStorageAdapter(package).load()
 
@@ -128,6 +132,7 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     assert snapshot.current_generation == current_id
     assert (package / "CURRENT").read_text(encoding="utf-8").strip() == current_id
     assert not orphan_path.exists()
+    assert not orphan_evidence.exists()
     assert list((package / "staging").iterdir()) == []
     assert {
         path.name: path.read_bytes() for path in current_path.iterdir()

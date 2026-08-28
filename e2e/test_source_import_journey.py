@@ -46,6 +46,29 @@ def rewrite_collection(generation: Path, filename: str, value: dict[str, Any]) -
     )
 
 
+def source_import_request(
+    initialized: dict[str, Any],
+    *,
+    operation_id: str,
+    adapter_id: str,
+    adapter_version: str,
+    reason: str,
+    records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": operation_id,
+        "context_id": initialized["context_id"],
+        "expected_generation": initialized["generation_after"],
+        "actor": {"actor_type": "source_adapter", "actor_id": adapter_id},
+        "reason": reason,
+        "adapter": {"adapter_id": adapter_id, "adapter_version": adapter_version},
+    }
+    if records is not None:
+        request["records"] = records
+    return request
+
+
 def import_with_authorization(
     package: Path,
     request: dict[str, Any],
@@ -95,15 +118,13 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
     initialized = parse_json(
         run_topo("context", "init", "--package", str(package), "--json")
     )
-    request = {
-        "contract_version": "topo.cli/0.1",
-        "operation_id": "0198f1a0-0000-7000-8000-000000000101",
-        "context_id": initialized["context_id"],
-        "expected_generation": initialized["generation_after"],
-        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.tally"},
-        "reason": "Import July statement",
-        "adapter": {"adapter_id": "adapter.tally", "adapter_version": "0.1.0"},
-        "records": [
+    request = source_import_request(
+        initialized,
+        operation_id="0198f1a0-0000-7000-8000-000000000101",
+        adapter_id="adapter.tally",
+        adapter_version="0.1.0",
+        reason="Import July statement",
+        records=[
             {
                 "source_id": "main-account",
                 "record_id": "2026-07-25:salary",
@@ -117,7 +138,7 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
                 },
             }
         ],
-    }
+    )
 
     imported, authorized_request = import_with_authorization(package, request)
     assert imported["outcome"] == "succeeded"
@@ -241,15 +262,13 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
     initialized = parse_json(
         run_topo("context", "init", "--package", str(package), "--json")
     )
-    request = {
-        "contract_version": "topo.cli/0.1",
-        "operation_id": "0198f1a0-0000-7000-8000-000000000111",
-        "context_id": initialized["context_id"],
-        "expected_generation": initialized["generation_after"],
-        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.bank"},
-        "reason": "Import statement",
-        "adapter": {"adapter_id": "adapter.bank", "adapter_version": "1.0.0"},
-        "records": [
+    request = source_import_request(
+        initialized,
+        operation_id="0198f1a0-0000-7000-8000-000000000111",
+        adapter_id="adapter.bank",
+        adapter_version="1.0.0",
+        reason="Import statement",
+        records=[
             {
                 "source_id": "checking-account",
                 "record_id": "line-104",
@@ -263,7 +282,7 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
                 },
             }
         ],
-    }
+    )
     first, _ = import_with_authorization(package, request)
     transaction_ref = first["result"]["transaction_refs"][0]
     old_evidence_ref = first["result"]["evidence_refs"][0]
@@ -381,15 +400,13 @@ def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> N
         "main-account,line-1,2026-07-25,3200.00,EUR,SALARY ACME,Income,rules-1,Employer match\n",
         encoding="utf-8",
     )
-    request = {
-        "contract_version": "topo.cli/0.1",
-        "operation_id": "0198f1a0-0000-7000-8000-000000000121",
-        "context_id": initialized["context_id"],
-        "expected_generation": initialized["generation_after"],
-        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.csv"},
-        "reason": "Import normalized CSV",
-        "adapter": {"adapter_id": "adapter.csv", "adapter_version": "1.0.0"},
-    }
+    request = source_import_request(
+        initialized,
+        operation_id="0198f1a0-0000-7000-8000-000000000121",
+        adapter_id="adapter.csv",
+        adapter_version="1.0.0",
+        reason="Import normalized CSV",
+    )
 
     imported, authorized_request = import_with_authorization(
         package, request, "--records-csv", str(csv_path)
@@ -423,15 +440,13 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
     initialized = parse_json(
         run_topo("context", "init", "--package", str(package), "--json")
     )
-    request = {
-        "contract_version": "topo.cli/0.1",
-        "operation_id": "0198f1a0-0000-7000-8000-000000000131",
-        "context_id": initialized["context_id"],
-        "expected_generation": initialized["generation_after"],
-        "actor": {"actor_type": "source_adapter", "actor_id": "adapter.test"},
-        "reason": "Import one source record",
-        "adapter": {"adapter_id": "adapter.test", "adapter_version": "1.0.0"},
-        "records": [
+    request = source_import_request(
+        initialized,
+        operation_id="0198f1a0-0000-7000-8000-000000000131",
+        adapter_id="adapter.test",
+        adapter_version="1.0.0",
+        reason="Import one source record",
+        records=[
             {
                 "source_id": "account",
                 "record_id": "line-1",
@@ -440,7 +455,7 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
                 "description": "TEST",
             }
         ],
-    }
+    )
     _, authorized_request = import_with_authorization(package, request)
     _, generation = current_generation(package)
     if invalid_lineage == "assertion_self":
