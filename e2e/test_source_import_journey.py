@@ -46,6 +46,28 @@ def rewrite_collection(generation: Path, filename: str, value: dict[str, Any]) -
     )
 
 
+def add_evidence_inventory_path(
+    package: Path, generation_id: str, record_path: str
+) -> None:
+    inventory_directory = package / "history" / "evidence-inventory"
+    inventory_path = next(
+        path
+        for path in inventory_directory.iterdir()
+        if path.name.startswith(generation_id + "-")
+    )
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["paths"].append(record_path)
+    inventory["paths"].sort()
+    inventory_payload = (
+        json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    inventory_path.unlink()
+    checksum = hashlib.sha256(inventory_payload).hexdigest()
+    (inventory_directory / f"{generation_id}-{checksum}.json").write_bytes(
+        inventory_payload
+    )
+
+
 def source_import_request(
     initialized: dict[str, Any],
     *,
@@ -440,6 +462,7 @@ def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> N
         "literal_mismatch",
         "duplicate_root",
         "classification_mismatch",
+        "orphan_raw_record",
     ],
 )
 def test_invalid_source_successor_lineage_blocks_package_reads(
@@ -529,25 +552,8 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
         rewrite_collection(generation, "evidence.json", evidence)
         original_record = package / source_evidence["record_path"]
         (package / duplicate_record_path).write_bytes(original_record.read_bytes())
-        generation_id = generation.name
-        inventory_directory = package / "history" / "evidence-inventory"
-        inventory_path = next(
-            path
-            for path in inventory_directory.iterdir()
-            if path.name.startswith(generation_id + "-")
-        )
-        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-        inventory["paths"].append(duplicate_record_path)
-        inventory["paths"].sort()
-        inventory_payload = (
-            json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode()
-        inventory_path.unlink()
-        checksum = hashlib.sha256(inventory_payload).hexdigest()
-        (inventory_directory / f"{generation_id}-{checksum}.json").write_bytes(
-            inventory_payload
-        )
-    else:
+        add_evidence_inventory_path(package, generation.name, duplicate_record_path)
+    elif invalid_lineage == "classification_mismatch":
         proposals = json.loads(
             (generation / "proposals.json").read_text(encoding="utf-8")
         )
@@ -560,6 +566,10 @@ def test_invalid_source_successor_lineage_blocks_package_reads(
             "Income"
         )
         rewrite_collection(generation, "proposals.json", proposals)
+    else:
+        orphan_record_path = "evidence/records/orphan.json"
+        (package / orphan_record_path).write_text('{"secret":"orphan"}\n')
+        add_evidence_inventory_path(package, generation.name, orphan_record_path)
 
     rejected = run_topo(
         "source",

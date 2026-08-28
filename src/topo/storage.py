@@ -179,17 +179,27 @@ def _bootstrap_legacy_evidence_inventory(
         return False
     if any(evidence_records.iterdir()):
         return False
-    inventory_directory.mkdir(mode=0o700)
     empty_inventory = b'{"paths":[]}\n'
-    for generation_id in published_generation_ids:
-        _write_durable(
-            inventory_directory
-            / _evidence_inventory_filename(generation_id, empty_inventory),
-            empty_inventory,
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix=".evidence-inventory-", dir=str(inventory_directory.parent)
         )
-    _sync_directory(inventory_directory)
-    _sync_directory(inventory_directory.parent)
-    return True
+    )
+    os.chmod(temporary, 0o700)
+    try:
+        for generation_id in published_generation_ids:
+            _write_durable(
+                temporary
+                / _evidence_inventory_filename(generation_id, empty_inventory),
+                empty_inventory,
+            )
+        _sync_directory(temporary)
+        os.replace(temporary, inventory_directory)
+        _sync_directory(inventory_directory.parent)
+        return True
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
 
 
 def _remove_artifact(path: Path) -> None:
@@ -352,6 +362,10 @@ class FileSystemStorageAdapter:
 
         journal = history / "journal.json"
         journal_tmp = history / ".journal.tmp"
+        for artifact in history.iterdir():
+            if artifact.name.startswith(".evidence-inventory-"):
+                _remove_artifact(artifact)
+        _sync_directory(history)
         published = self._published_generation_ids(journal)
         if published is None and journal_tmp.is_file() and not journal_tmp.is_symlink():
             recovered = self._published_generation_ids(journal_tmp)

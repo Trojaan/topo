@@ -585,6 +585,11 @@ def _validate_snapshot(
                     "source evidence successor lineage is invalid"
                 )
 
+    if require_journal_tip and set(snapshot.evidence_records) != set(source_records):
+        raise PackageIntegrityError(
+            "raw evidence records must exactly match canonical evidence"
+        )
+
     evidence_successors = [
         record.supersedes
         for record in evidence.records

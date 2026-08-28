@@ -150,10 +150,16 @@ def test_pre_inventory_package_is_bootstrapped_before_its_next_mutation(
     package = tmp_path / "legacy.topo"
     initialized = initialize(package)
     shutil.rmtree(package / "history" / "evidence-inventory")
+    abandoned_bootstrap = package / "history" / ".evidence-inventory-crash"
+    abandoned_bootstrap.mkdir()
+    (abandoned_bootstrap / "partial.json").write_text(
+        '{"paths":[]}\n', encoding="utf-8"
+    )
 
     submitted = submit_salary_proposal(package, initialized)
 
     assert submitted["generation_after"] != initialized["generation_after"]
+    assert not abandoned_bootstrap.exists()
     inventories = tuple((package / "history" / "evidence-inventory").iterdir())
     assert len(inventories) == 2
 
