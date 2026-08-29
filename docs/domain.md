@@ -47,6 +47,14 @@ once. Restricted pension remains a separate component. Original-currency
 subtotals survive missing exchange rates; only dependent totals become
 unavailable. Missing values stay visible and conflicts remain local.
 
+`analyze run` with `analysis.scenario_comparison` compares one explicit scenario
+with the baseline on a future `as_of_date`. Its assumptions are limited to dated
+recurring-cashflow changes, one-off cashflows, and value overrides with a target,
+currency, and reason. The result keeps baseline, scenario, and delta separate and
+marks the comparison as projected knowledge. A cashflow improvement never becomes
+wealth automatically; without an explicit destination Topo reports
+`CASHFLOW_DESTINATION_NOT_MODELED`.
+
 Topo produces traceable facts, calculations, gaps, uncertainties, and scenarios.
 It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human

@@ -95,4 +95,12 @@ date-matching `topo.core/exchange_rate` assertion refs in `reporting_currency`.
 Without such a rate, original-currency subtotals remain usable and the converted
 total is unavailable.
 
+For an effect-free scenario comparison, use `analysis.scenario_comparison`, a
+future `as_of_date`, one reporting currency, and a non-empty `scenario` with a
+stable `scenario_id`. The only accepted assumption types are
+`recurring_cashflow_change`, `one_off_cashflow`, and `value_override`; each has an
+entity target, money, effective date, and reason. A value override must be dated
+exactly on the scenario date. The response returns separate `baseline`, `scenario`,
+and `delta` views and never changes `CURRENT`.
+
 Never use real financial data in tests or committed fixtures.

@@ -149,6 +149,7 @@ def _scenario() -> SchemaObject:
                     "scenario_id": _uuid7(),
                     "assumptions": {
                         "type": "array",
+                        "minItems": 1,
                         "items": _scenario_assumption(),
                     },
                 },
@@ -419,6 +420,7 @@ def input_schema(command: str) -> SchemaObject:
                         "analysis.realized_monthly_cashflow",
                         "analysis.normalized_monthly_cashflow",
                         "analysis.net_worth",
+                        "analysis.scenario_comparison",
                     ]
                 },
                 "analysis_contract_version": {"const": "0.1"},
@@ -810,28 +812,55 @@ def _result_schema(command: str) -> SchemaObject:
                 "explain_ref",
             ),
         )
-        return _closed_object(
+        metadata = {
+            "analysis_id": {"type": "string", "minLength": 1},
+            "analysis_contract_version": {"type": "string", "minLength": 1},
+            "analysis_scope": _scope(),
+            "as_of_date": {"type": "string", "format": "date"},
+            "period": {"type": ["object", "null"]},
+            "used_generation": _uuid7(),
+            "result_id": _uuid7(),
+        }
+        metadata_required = (
+            "analysis_id",
+            "analysis_contract_version",
+            "analysis_scope",
+            "as_of_date",
+            "period",
+            "used_generation",
+            "result_id",
+        )
+        ordinary_result = _closed_object(
+            {**metadata, "components": {"type": "array", "items": component}},
+            (*metadata_required, "components"),
+        )
+        scenario_view = _closed_object(
             {
-                "analysis_id": {"type": "string", "minLength": 1},
-                "analysis_contract_version": {"type": "string", "minLength": 1},
-                "analysis_scope": _scope(),
-                "as_of_date": {"type": "string", "format": "date"},
-                "period": {"type": ["object", "null"]},
-                "used_generation": _uuid7(),
-                "result_id": _uuid7(),
-                "components": {"type": "array", "items": component},
+                "normalized_monthly_cashflow": component,
+                "one_off_cashflow": component,
+                "net_worth": component,
+            },
+            ("normalized_monthly_cashflow", "one_off_cashflow", "net_worth"),
+        )
+        scenario_result = _closed_object(
+            {
+                **metadata,
+                "scenario_id": _uuid7(),
+                "knowledge_type": {"const": "projected"},
+                "baseline": scenario_view,
+                "scenario": scenario_view,
+                "delta": scenario_view,
             },
             (
-                "analysis_id",
-                "analysis_contract_version",
-                "analysis_scope",
-                "as_of_date",
-                "period",
-                "used_generation",
-                "result_id",
-                "components",
+                *metadata_required,
+                "scenario_id",
+                "knowledge_type",
+                "baseline",
+                "scenario",
+                "delta",
             ),
         )
+        return {"oneOf": [ordinary_result, scenario_result]}
     if command == "explain":
         return _closed_object(
             {

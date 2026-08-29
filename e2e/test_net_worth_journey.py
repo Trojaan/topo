@@ -82,6 +82,8 @@ def add_value(
     currency: str,
     interest: str,
     basis: str,
+    start: str = "2026-08-25",
+    end_exclusive: str = "2027-01-01",
 ) -> str:
     return confirm_assertion(
         package,
@@ -91,8 +93,8 @@ def add_value(
         subject_id=subject_id,
         predicate=predicate,
         evidence_id=evidence_id,
-        start="2026-08-25",
-        end_exclusive="2027-01-01",
+        start=start,
+        end_exclusive=end_exclusive,
         object_value=money(amount, currency),
         module_data={
             "economic_interest_ref": interest,

@@ -461,8 +461,62 @@ class NetWorthAnalyzeRunRequest(TopoModel):
     scenario: None
 
 
+class RecurringCashflowChangeAssumption(TopoModel):
+    assumption_type: Literal["recurring_cashflow_change"]
+    target_ref: Ref
+    change: Literal["add", "replace", "end"]
+    money: Money
+    effective_date: date
+    reason: NonEmptyString
+
+
+class OneOffCashflowAssumption(TopoModel):
+    assumption_type: Literal["one_off_cashflow"]
+    target_ref: Ref
+    direction: Literal["inflow", "outflow"]
+    money: Money
+    effective_date: date
+    reason: NonEmptyString
+
+
+class ValueOverrideAssumption(TopoModel):
+    assumption_type: Literal["value_override"]
+    target_ref: Ref
+    money: Money
+    effective_date: date
+    reason: NonEmptyString
+
+
+type ScenarioAssumption = Annotated[
+    RecurringCashflowChangeAssumption
+    | OneOffCashflowAssumption
+    | ValueOverrideAssumption,
+    Field(discriminator="assumption_type"),
+]
+
+
+class Scenario(TopoModel):
+    scenario_id: UUID7
+    assumptions: tuple[ScenarioAssumption, ...] = Field(min_length=1)
+
+
+class ScenarioAnalyzeRunRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    analysis_id: Literal["analysis.scenario_comparison"]
+    analysis_contract_version: Literal["0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    period: None
+    reporting_currency: ReportingCurrency
+    scenario: Scenario
+
+
 type AnalyzeRunRequest = Annotated[
-    RealizedAnalyzeRunRequest | NormalizedAnalyzeRunRequest | NetWorthAnalyzeRunRequest,
+    RealizedAnalyzeRunRequest
+    | NormalizedAnalyzeRunRequest
+    | NetWorthAnalyzeRunRequest
+    | ScenarioAnalyzeRunRequest,
     Field(discriminator="analysis_id"),
 ]
 

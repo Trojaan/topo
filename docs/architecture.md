@@ -27,6 +27,10 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 - `net_worth.py` is an effect-free analysis module. It resolves current values by
   economic interest and explicit scope allocation, keeps restricted pension and
   original currencies separate, and localizes valuation and conversion gaps.
+- `scenario.py` is an effect-free analysis module that composes the public
+  normalized-cashflow and net-worth calculations. It applies only closed,
+  explicitly dated assumptions in memory and publishes baseline, scenario, and
+  delta components without creating a canonical generation.
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
