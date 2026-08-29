@@ -29,3 +29,11 @@ class StaleGenerationError(Exception):
     def __init__(self, actual_generation: str) -> None:
         self.actual_generation = actual_generation
         super().__init__(actual_generation)
+
+
+class ExplanationReferenceError(Exception):
+    def __init__(self, code: str, ref: str, reason: str) -> None:
+        self.code = code
+        self.ref = ref
+        self.reason = reason
+        super().__init__(reason)

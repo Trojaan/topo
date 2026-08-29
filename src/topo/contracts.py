@@ -31,11 +31,11 @@ COMMANDS = (
     "rule.validate",
     "rule.preview",
     "rule.activate",
+    "explain",
 )
 SCHEMA_COMMANDS = (
     *COMMANDS,
     "validate",
-    "explain",
     "workflow.next",
 )
 MUTATING_COMMANDS = {
@@ -706,8 +706,12 @@ def _result_schema(command: str) -> SchemaObject:
                 "proposal_id": _uuid7(),
                 "assertion_id": _uuid7(),
                 "evidence_id": _uuid7(),
+                "decision_ref": {
+                    "type": "string",
+                    "pattern": f"^decision:{UUID7_PATTERN[1:-1]}$",
+                },
             },
-            ("proposal_id", "assertion_id", "evidence_id"),
+            ("proposal_id", "assertion_id", "evidence_id", "decision_ref"),
         )
     if command == "proposal.correct":
         return _closed_object(
@@ -715,13 +719,23 @@ def _result_schema(command: str) -> SchemaObject:
                 "proposal_id": _uuid7(),
                 "assertion_id": _uuid7(),
                 "evidence_id": _uuid7(),
+                "decision_ref": {
+                    "type": "string",
+                    "pattern": f"^decision:{UUID7_PATTERN[1:-1]}$",
+                },
             },
-            ("proposal_id", "assertion_id", "evidence_id"),
+            ("proposal_id", "assertion_id", "evidence_id", "decision_ref"),
         )
     if command == "proposal.reject":
         return _closed_object(
-            {"proposal_id": _uuid7()},
-            ("proposal_id",),
+            {
+                "proposal_id": _uuid7(),
+                "decision_ref": {
+                    "type": "string",
+                    "pattern": f"^decision:{UUID7_PATTERN[1:-1]}$",
+                },
+            },
+            ("proposal_id", "decision_ref"),
         )
     if command in {"rule.validate", "rule.preview"}:
         validation_properties: SchemaObject = {
@@ -782,6 +796,7 @@ def _result_schema(command: str) -> SchemaObject:
                     "conditions": {"type": "array", "items": condition},
                     "matched": {"type": "boolean"},
                     "outcome": {"type": "string", "minLength": 1},
+                    "explain_ref": _ref(("rule_outcome",)),
                 },
                 (
                     "package_id",
@@ -793,6 +808,7 @@ def _result_schema(command: str) -> SchemaObject:
                     "conditions",
                     "matched",
                     "outcome",
+                    "explain_ref",
                 ),
             )
             validation_properties.update(
@@ -986,13 +1002,69 @@ def _result_schema(command: str) -> SchemaObject:
         return _closed_object(
             {
                 "ref": {"type": "string", "minLength": 1},
+                "ref_type": {
+                    "enum": [
+                        "proposal",
+                        "decision",
+                        "diagnostic",
+                        "rule_outcome",
+                        "analysis_component",
+                    ]
+                },
                 "meaning": {"type": "string"},
-                "source_refs": {"type": "array", "items": _ref()},
+                "generation_id": _uuid7(),
+                "contract_version": {"const": CONTRACT_VERSION},
+                "record_checksum": {
+                    "type": "string",
+                    "pattern": r"^sha256:[0-9a-f]{64}$",
+                },
+                "analysis_id": {"type": "string"},
+                "analysis_contract_version": {"type": "string"},
+                "module_versions": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {
+                            "module_id": {"type": "string", "minLength": 1},
+                            "module_version": {"type": "string", "minLength": 1},
+                        },
+                        ("module_id", "module_version"),
+                    ),
+                },
                 "assertion_refs": {"type": "array", "items": _ref(("assertion",))},
-                "steps": {"type": "array", "items": {"type": "string"}},
-                "assumptions": {"type": "array", "items": _closed_object({})},
+                "evidence_refs": {"type": "array", "items": _ref(("evidence",))},
+                "requirements": {"type": "array", "items": {"type": "object"}},
+                "assumptions": {"type": "array", "items": {"type": "object"}},
+                "calculation_steps": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+                "intermediate_results": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+                "rounding": {"type": ["object", "null"]},
+                "proposal": {"type": "object"},
+                "decision": {"type": ["object", "null"]},
+                "diagnostic": {"type": "object"},
+                "rule_trace": {"type": ["object", "null"]},
             },
-            ("ref", "meaning", "source_refs", "assertion_refs", "steps", "assumptions"),
+            (
+                "ref",
+                "ref_type",
+                "meaning",
+                "generation_id",
+                "contract_version",
+                "module_versions",
+                "assertion_refs",
+                "evidence_refs",
+                "requirements",
+                "assumptions",
+                "calculation_steps",
+                "intermediate_results",
+                "rounding",
+                "decision",
+                "rule_trace",
+            ),
         )
     if command == "workflow.next":
         return _closed_object(
@@ -1025,6 +1097,7 @@ def _diagnostic_schema() -> SchemaObject:
             "retryable": {"type": "boolean"},
             "effect": {"const": "none"},
             "related_refs": {"type": "array", "items": _ref()},
+            "explain_ref": _ref(("diagnostic",)),
         },
     }
 

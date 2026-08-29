@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from topo.errors import PackageIntegrityError, StaleGenerationError
 
@@ -41,12 +41,23 @@ class StorageAdapter(Protocol):
     ) -> None: ...
 
 
+@runtime_checkable
+class ExplanationStorage(Protocol):
+    def store_explanations(self, records: dict[str, bytes]) -> None: ...
+
+    def load_explanation(self, ref: str) -> bytes | None: ...
+
+
 def _write_durable(path: Path, payload: bytes) -> None:
     with path.open("xb") as stream:
         os.chmod(path, 0o600)
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _explanation_filename(ref: str) -> str:
+    return hashlib.sha256(ref.encode("utf-8")).hexdigest() + ".json"
 
 
 def _sync_directory(path: Path) -> None:
@@ -263,6 +274,36 @@ class FileSystemStorageAdapter:
             evidence_records=evidence_records,
             retained_generation_files=retained_generation_files,
         )
+
+    def store_explanations(self, records: dict[str, bytes]) -> None:
+        if not records:
+            return
+        with _exclusive_file_lock(self._package / "LOCK"):
+            directory = self._package / "derived" / "explanations"
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if directory.is_symlink() or not directory.is_dir():
+                raise OSError("explanation index must be a real directory")
+            for ref, payload in sorted(records.items()):
+                destination = directory / _explanation_filename(ref)
+                if destination.exists():
+                    if destination.is_symlink() or destination.read_bytes() != payload:
+                        raise OSError(
+                            "stored explanation does not match its stable ref"
+                        )
+                    continue
+                _write_durable(destination, payload)
+            _sync_directory(directory)
+
+    def load_explanation(self, ref: str) -> bytes | None:
+        with _exclusive_file_lock(self._package / "LOCK"):
+            path = (
+                self._package / "derived" / "explanations" / _explanation_filename(ref)
+            )
+            if not path.exists():
+                return None
+            if path.is_symlink() or not path.is_file():
+                raise OSError("explanation record must be a real file")
+            return path.read_bytes()
 
     def commit(
         self, publication: PackageCommit, *, expected_generation: str | None

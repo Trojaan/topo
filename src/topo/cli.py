@@ -6,7 +6,7 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 
 from jsonschema import ValidationError
 from pydantic import JsonValue, TypeAdapter
@@ -23,6 +23,7 @@ from topo.contracts import (
 from topo.engine import EngineCore
 from topo.errors import (
     ContextAlreadyExistsError,
+    ExplanationReferenceError,
     PackageIntegrityError,
     ProposalDecisionError,
     SemanticModulesUnavailableError,
@@ -94,6 +95,10 @@ def _normalize_request(
         if "rule_package_yaml" in normalized:
             raise ValueError("provide rule_package_yaml in JSON or --rules, not both")
         normalized["rule_package_yaml"] = args.rules.read_text(encoding="utf-8")
+    if command == "explain" and args.ref is not None:
+        if "ref" in normalized and normalized["ref"] != args.ref:
+            raise ValueError("provide the same ref in JSON and --ref, or only one")
+        normalized["ref"] = args.ref
     return normalized
 
 
@@ -144,6 +149,37 @@ def _records_from_csv(path: Path) -> list[JsonValue]:
 
 def _write_json(value: JsonObject) -> None:
     sys.stdout.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _write_explanation_text(result: JsonObject, locale: str) -> None:
+    labels = (
+        {
+            "reference": "Referentie",
+            "meaning": "Betekenis",
+            "generation": "Generatie",
+            "requirements": "Vereisten",
+            "assumptions": "Aannames",
+            "steps": "Rekenstappen",
+        }
+        if locale == "nl-NL"
+        else {
+            "reference": "Reference",
+            "meaning": "Meaning",
+            "generation": "Generation",
+            "requirements": "Requirements",
+            "assumptions": "Assumptions",
+            "steps": "Calculation steps",
+        }
+    )
+    lines = (
+        f"{labels['reference']}: {result['ref']}",
+        f"{labels['meaning']}: {result['meaning']}",
+        f"{labels['generation']}: {result['generation_id']}",
+        f"{labels['requirements']}: {len(cast(list[JsonValue], result['requirements']))}",
+        f"{labels['assumptions']}: {len(cast(list[JsonValue], result['assumptions']))}",
+        f"{labels['steps']}: {len(cast(list[JsonValue], result['calculation_steps']))}",
+    )
+    sys.stdout.write("\n".join(lines) + "\n")
 
 
 def _require_supported_contract(request: JsonObject) -> None:
@@ -262,6 +298,10 @@ def _parser() -> argparse.ArgumentParser:
         rule_command = rule_commands.add_parser(name)
         rule_command.add_argument("--package", type=Path, required=True)
         rule_command.add_argument("--rules", type=Path)
+    explain = commands.add_parser("explain")
+    explain.add_argument("--package", type=Path, required=True)
+    explain.add_argument("--ref")
+    explain.add_argument("--locale", choices=("nl-NL", "en"), default="nl-NL")
     return parser
 
 
@@ -422,6 +462,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"analyze.{args.analyze_command}"
     elif args.group == "rule":
         command = f"rule.{args.rule_command}"
+    elif args.group == "explain":
+        command = "explain"
     else:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
@@ -508,6 +550,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     refs=(Ref(ref_type="generation", id=generation),),
                 )
             )
+            return 0
+        if command == "explain":
+            engine = EngineCore(FileSystemStorageAdapter(args.package))
+            explanation = engine.explain(str(request["ref"]))
+            generation = str(explanation["generation_id"])
+            _, context_id = engine.current_identity()
+            envelope = _success_envelope(
+                command,
+                request,
+                explanation,
+                context_id=context_id,
+                generation_before=generation,
+                generation_after=generation,
+            )
+            if json_output:
+                _write_json(envelope)
+            else:
+                _write_explanation_text(explanation, args.locale)
             return 0
         if command in {"rule.validate", "rule.preview"}:
             rule_request = RulePackageRequest.model_validate_json(
@@ -618,6 +678,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ProposalDecisionError as error:
         _write_json(_proposal_rejection_envelope(command, request, error))
+        return 0
+    except ExplanationReferenceError as error:
+        engine = EngineCore(FileSystemStorageAdapter(args.package))
+        generation, context_id = engine.current_identity()
+        response = ResponseEnvelope(
+            contract_version=CONTRACT_VERSION,
+            command=command,
+            operation_id=None,
+            context_id=context_id,
+            generation_before=generation,
+            generation_after=generation,
+            outcome="rejected",
+            result={},
+            diagnostics=(
+                Diagnostic(
+                    code=error.code,
+                    message_key=f"diagnostic.{error.code.lower()}",
+                    severity="error",
+                    path="/ref",
+                    params={"ref": error.ref, "reason": error.reason},
+                    retryable=False,
+                ),
+            ),
+            trace=Trace(normalized_request=request),
+        )
+        value = model_to_json_object(response)
+        validate_response(command, value)
+        _write_json(value)
         return 0
     except RulePackageError as error:
         _write_json(

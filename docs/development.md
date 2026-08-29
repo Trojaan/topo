@@ -110,4 +110,18 @@ local YAML file. Both requests include the current `context_id` and
 first send `authorization: null`, then bind explicit human authorization to the
 returned `preview_ref`. Only the authorized call may advance `CURRENT`.
 
+Explain any returned `explain_ref` by joining its `ref_type` and `id` with a
+colon. Proposal IDs use `proposal:<id>` and successful proposal decisions return
+their complete `decision:<mutation-id>` reference directly:
+
+```bash
+uv run topo explain --package /tmp/example.topo \
+  --ref analysis_component:0198f1a0-0000-7000-8000-000000000001 --json
+```
+
+The response repeats the used generation, CLI and analysis contract versions,
+module versions, assertion and evidence refs, requirements, assumptions,
+calculation steps, unrounded intermediates, and rounding. Unknown or damaged
+derived references return an explicit diagnostic with an empty result.
+
 Never use real financial data in tests or committed fixtures.

@@ -103,6 +103,7 @@ def test_rule_package_validation_preview_and_authorized_activation_are_safe(
         ],
         "matched": False,
         "outcome": "proposal",
+        "explain_ref": previewed["result"]["evaluations"][0]["explain_ref"],
     }
     assert (package / "CURRENT").read_text().strip() == original_generation
 

@@ -39,6 +39,10 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
   atomic publication, and crash recovery. Its checksummed evidence inventory
   contains opaque paths only; canonical validation remains an engine concern.
+- `explanations.py` projects already-decided proposals, decisions, diagnostics,
+  rule traces, and analysis components into one locale-independent explanation
+  shape. `EngineCore` may cache those opaque bytes under `derived/explanations`;
+  the cache is outside canonical generations and never changes financial state.
 
 ## Dependency direction
 

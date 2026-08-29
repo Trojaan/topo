@@ -13,8 +13,16 @@ from topo.builtin_modules import default_module_catalog
 from topo.canonical_validation import ValidatedPackage, load_and_validate_generation
 from topo.errors import (
     ContextAlreadyExistsError,
+    ExplanationReferenceError,
     PackageIntegrityError,
     ProposalDecisionError,
+)
+from topo.explanations import (
+    decode_explanation,
+    explain_decision,
+    explain_proposal,
+    index_analysis,
+    index_rule_preview,
 )
 from topo.identifiers import uuid7
 from topo.models import (
@@ -75,6 +83,7 @@ from topo.rules import (
 )
 from topo.scenario import analyze_scenario_comparison
 from topo.storage import (
+    ExplanationStorage,
     PackageCommit,
     StorageAdapter,
     StoredPackageSnapshot,
@@ -171,12 +180,75 @@ class EngineCore:
     def analyze(self, request: AnalyzeRunRequest) -> JsonObject:
         validated = self._load_existing()
         if request.analysis_id == "analysis.realized_monthly_cashflow":
-            return analyze_realized_monthly_cashflow(validated, request)
-        if request.analysis_id == "analysis.normalized_monthly_cashflow":
-            return analyze_normalized_monthly_cashflow(validated, request)
-        if isinstance(request, ScenarioAnalyzeRunRequest):
-            return analyze_scenario_comparison(validated, request)
-        return analyze_net_worth(validated, request)
+            result = analyze_realized_monthly_cashflow(validated, request)
+        elif request.analysis_id == "analysis.normalized_monthly_cashflow":
+            result = analyze_normalized_monthly_cashflow(validated, request)
+        elif isinstance(request, ScenarioAnalyzeRunRequest):
+            result = analyze_scenario_comparison(validated, request)
+        else:
+            result = analyze_net_worth(validated, request)
+        indexed, explanations = index_analysis(validated, result)
+        if isinstance(self._storage, ExplanationStorage):
+            self._storage.store_explanations(explanations)
+        return indexed
+
+    def explain(self, ref: str) -> JsonObject:
+        validated = self._load_existing()
+        ref_type, separator, ref_id = ref.partition(":")
+        if not separator or not ref_id:
+            raise ExplanationReferenceError(
+                "EXPLAIN_REFERENCE_UNKNOWN", ref, "reference has no supported type"
+            )
+        if ref_type == "proposal":
+            proposal = next(
+                (item for item in validated.proposals.records if item.id == ref_id),
+                None,
+            )
+            if proposal is not None:
+                return explain_proposal(validated, proposal)
+        if ref_type == "decision":
+            proposal = next(
+                (
+                    item
+                    for item in validated.proposals.records
+                    if item.decision is not None and item.decision.mutation_id == ref_id
+                ),
+                None,
+            )
+            if proposal is not None:
+                return explain_decision(validated, proposal)
+        try:
+            payload = (
+                self._storage.load_explanation(ref)
+                if isinstance(self._storage, ExplanationStorage)
+                else None
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExplanationReferenceError(
+                "EXPLAIN_REFERENCE_UNVERIFIABLE", ref, str(error)
+            ) from error
+        if payload is not None:
+            try:
+                value = decode_explanation(payload, ref)
+                generation = value.get("generation_id")
+                available_generations = {
+                    validated.manifest.generation_id,
+                    *(entry.generation_after for entry in validated.journal.entries),
+                }
+                if generation not in available_generations:
+                    raise ValueError("used generation is no longer verifiable")
+                return value
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                raise ExplanationReferenceError(
+                    "EXPLAIN_REFERENCE_UNVERIFIABLE", ref, str(error)
+                ) from error
+        raise ExplanationReferenceError(
+            "EXPLAIN_REFERENCE_UNKNOWN", ref, "reference does not resolve"
+        )
+
+    def current_identity(self) -> tuple[str, str]:
+        validated = self._load_existing()
+        return validated.manifest.generation_id, validated.manifest.context_id
 
     def validate_rules(self, request: RulePackageRequest) -> JsonObject:
         validated = self._load_existing()
@@ -205,7 +277,7 @@ class EngineCore:
         validated = self._load_existing()
         self._guard_rule_read(validated.manifest, request)
         package = self._validated_rule_package(validated, request.rule_package_yaml)
-        return {
+        result: JsonObject = {
             **self._rule_validation_result(validated, package),
             "preview_ref": preview_ref(package, validated.manifest.generation_id),
             "effects": [
@@ -218,6 +290,10 @@ class EngineCore:
             ],
             "evaluations": preview_traces(package),
         }
+        indexed, explanations = index_rule_preview(validated, result)
+        if isinstance(self._storage, ExplanationStorage):
+            self._storage.store_explanations(explanations)
+        return indexed
 
     def activate_rules(self, request: RuleActivateRequest) -> MutationOutcome:
         validated = self._load_existing()
@@ -668,6 +744,7 @@ class EngineCore:
             "proposal_id": proposal.id,
             "assertion_id": assertion_id,
             "evidence_id": evidence_id,
+            "decision_ref": f"decision:{mutation_id}",
         }
         publication = self._build_update_publication(
             validated,
@@ -768,6 +845,7 @@ class EngineCore:
             "proposal_id": proposal.id,
             "assertion_id": assertion_id,
             "evidence_id": evidence_id,
+            "decision_ref": f"decision:{mutation_id}",
         }
         publication = self._build_update_publication(
             validated,
@@ -810,7 +888,10 @@ class EngineCore:
                 ),
             }
         )
-        result: JsonObject = {"proposal_id": proposal.id}
+        result: JsonObject = {
+            "proposal_id": proposal.id,
+            "decision_ref": f"decision:{mutation_id}",
+        }
         publication = self._build_update_publication(
             validated,
             request=request,

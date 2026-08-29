@@ -70,6 +70,15 @@ It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human
 review outside the engine.
 
+`explain --ref` resolves proposals and decisions from validated canonical state
+and resolves analysis components, analysis diagnostics, and rule outcomes from a
+checksum-addressed derived index. The index is not financial context and never
+advances `CURRENT`. An explanation is returned only while its stable reference,
+payload, and used immutable generation remain verifiable; otherwise Topo returns
+an explicit unknown or unverifiable-reference diagnostic and no invented explanation.
+Presentation may summarize this structure, but may not add meaning or change its
+stable English identifiers.
+
 Domain modules own universal financial meaning. Jurisdiction modules overlay only
 meaning that is genuinely jurisdiction-specific. Presentation language is a
 separate concern, and machine identifiers stay stable English.
