@@ -5,7 +5,7 @@ import json
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, JsonValue
 
@@ -45,6 +45,9 @@ from topo.models import (
     ProposalSubmitRequest,
     ProposedAssertion,
     Ref,
+    RuleActivateRequest,
+    RulePackagePin,
+    RulePackageRequest,
     ScenarioAnalyzeRunRequest,
     SourceImportRecord,
     SourceImportRequest,
@@ -59,6 +62,17 @@ from topo.net_worth import analyze_net_worth
 from topo.normalized_cashflow import analyze_normalized_monthly_cashflow
 from topo.realized_cashflow import analyze_realized_monthly_cashflow
 from topo.recognition import TransactionObservation, recognize_recurring_cashflows
+from topo.rules import (
+    DeclarativeRulePackage,
+    RulePackageError,
+    canonical_rule_package_bytes,
+    default_rule_registry,
+    package_checksum,
+    parse_rule_package,
+    preview_ref,
+    preview_traces,
+    validate_rule_package,
+)
 from topo.scenario import analyze_scenario_comparison
 from topo.storage import (
     PackageCommit,
@@ -163,6 +177,135 @@ class EngineCore:
         if isinstance(request, ScenarioAnalyzeRunRequest):
             return analyze_scenario_comparison(validated, request)
         return analyze_net_worth(validated, request)
+
+    def validate_rules(self, request: RulePackageRequest) -> JsonObject:
+        validated = self._load_existing()
+        self._guard_rule_read(validated.manifest, request)
+        package = self._validated_rule_package(validated, request.rule_package_yaml)
+        return self._rule_validation_result(validated, package)
+
+    @staticmethod
+    def _rule_validation_result(
+        validated: ValidatedPackage, package: DeclarativeRulePackage
+    ) -> JsonObject:
+        return {
+            "valid": True,
+            "validated_generation": validated.manifest.generation_id,
+            "package_id": package.package_id,
+            "package_version": package.package_version,
+            "module_id": package.module_id,
+            "checksum": package_checksum(package),
+            "rule_count": len(package.rules),
+            "rule_types": cast(
+                list[JsonValue], sorted({rule.rule_type for rule in package.rules})
+            ),
+        }
+
+    def preview_rules(self, request: RulePackageRequest) -> JsonObject:
+        validated = self._load_existing()
+        self._guard_rule_read(validated.manifest, request)
+        package = self._validated_rule_package(validated, request.rule_package_yaml)
+        return {
+            **self._rule_validation_result(validated, package),
+            "preview_ref": preview_ref(package, validated.manifest.generation_id),
+            "effects": [
+                {
+                    "action": "replace_rule_package",
+                    "module_id": package.module_id,
+                    "package_id": package.package_id,
+                    "package_version": package.package_version,
+                }
+            ],
+            "evaluations": preview_traces(package),
+        }
+
+    def activate_rules(self, request: RuleActivateRequest) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        package = self._validated_rule_package(validated, request.rule_package_yaml)
+        preview: JsonObject = {
+            "preview_ref": preview_ref(package, validated.manifest.generation_id),
+            "effects": [
+                {
+                    "action": "replace_rule_package",
+                    "module_id": package.module_id,
+                    "package_id": package.package_id,
+                    "package_version": package.package_version,
+                }
+            ],
+        }
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        if request.authorization.preview_ref != preview["preview_ref"]:
+            raise RulePackageError(
+                "INVALID_AUTHORIZATION",
+                "/authorization/preview_ref",
+                "authorization does not match this rule package preview",
+            )
+        if request.authorization.authorized_by.actor_type != "human":
+            raise RulePackageError(
+                "INVALID_AUTHORIZATION",
+                "/authorization/authorized_by/actor_type",
+                "rule package activation must be authorized by a human",
+            )
+        now = self._now()
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        artifact = f"rule-package.{package.module_id}.json"
+        package_bytes = canonical_rule_package_bytes(package)
+        checksum = package_checksum(package)
+        pin = RulePackagePin(
+            package_id=package.package_id,
+            package_version=package.package_version,
+            module_id=package.module_id,
+            module_version=package.module_version,
+            checksum=checksum,
+            artifact=artifact,
+        )
+        active_pins = tuple(
+            sorted(
+                (
+                    *(
+                        candidate
+                        for candidate in validated.manifest.active_rule_packages
+                        if candidate.module_id != package.module_id
+                    ),
+                    pin,
+                ),
+                key=lambda candidate: candidate.module_id,
+            )
+        )
+        active_files = {
+            name: payload
+            for name, payload in validated.rule_package_files.items()
+            if name != artifact
+        }
+        active_files[artifact] = package_bytes
+        result: JsonObject = {
+            "package_id": package.package_id,
+            "package_version": package.package_version,
+            "module_id": package.module_id,
+            "checksum": checksum,
+            "rule_count": len(package.rules),
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="rule.activate",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            result=result,
+            now=now,
+            active_rule_packages=active_pins,
+            rule_package_files=active_files,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
 
     def submit_proposal(self, request: ProposalSubmitRequest) -> MutationOutcome:
         validated = self._load_existing()
@@ -950,6 +1093,7 @@ class EngineCore:
             "proposal.confirm",
             "proposal.correct",
             "proposal.reject",
+            "rule.activate",
         ],
         mutation_id: str,
         generation_id: str,
@@ -960,6 +1104,8 @@ class EngineCore:
         evidence: tuple[EvidenceRecord, ...] | None = None,
         proposals: tuple[ProposalRecord, ...] | None = None,
         source_records: dict[str, bytes] | None = None,
+        active_rule_packages: tuple[RulePackagePin, ...] | None = None,
+        rule_package_files: dict[str, bytes] | None = None,
     ) -> PackageCommit:
         inventory_payload = _evidence_inventory_bytes(
             tuple({*validated.source_records, *(source_records or {})})
@@ -1007,9 +1153,15 @@ class EngineCore:
                 )
             ),
         }
+        active_artifacts = (
+            validated.rule_package_files
+            if rule_package_files is None
+            else rule_package_files
+        )
+        generation_payloads = {**collections, **active_artifacts}
         checksums = {
             filename: "sha256:" + hashlib.sha256(payload).hexdigest()
-            for filename, payload in collections.items()
+            for filename, payload in generation_payloads.items()
         }
         manifest = validated.manifest.model_copy(
             update={
@@ -1017,6 +1169,11 @@ class EngineCore:
                 "based_on": validated.manifest.generation_id,
                 "mutation_id": mutation_id,
                 "recorded_at": now,
+                "active_rule_packages": (
+                    validated.manifest.active_rule_packages
+                    if active_rule_packages is None
+                    else active_rule_packages
+                ),
                 "files": checksums,
             }
         )
@@ -1040,7 +1197,7 @@ class EngineCore:
         publication = PackageCommit(
             generation_id=generation_id,
             generation_files={
-                **collections,
+                **generation_payloads,
                 "manifest.json": _json_bytes(manifest),
             },
             journal=_json_bytes(journal),
@@ -1062,6 +1219,27 @@ class EngineCore:
 
     def _commit_update(self, publication: PackageCommit, expected: str) -> None:
         self._storage.commit(publication, expected_generation=expected)
+
+    @staticmethod
+    def _guard_rule_read(manifest: Manifest, request: RulePackageRequest) -> None:
+        if request.context_id != manifest.context_id:
+            raise ValueError("context_id does not match the package")
+        if request.expected_generation != manifest.generation_id:
+            raise ValueError("expected_generation is not the active manifest version")
+
+    @staticmethod
+    def _validated_rule_package(
+        validated: ValidatedPackage, payload: str
+    ) -> DeclarativeRulePackage:
+        package = parse_rule_package(payload)
+        validate_rule_package(
+            package,
+            default_rule_registry(),
+            pinned_modules={
+                pin.module_id: pin.module_version for pin in validated.manifest.modules
+            },
+        )
+        return package
 
     @staticmethod
     def _success(

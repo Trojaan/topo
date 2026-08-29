@@ -253,6 +253,15 @@ class ModulePin(TopoModel):
     checksum: Checksum
 
 
+class RulePackagePin(TopoModel):
+    package_id: NonEmptyString
+    package_version: NonEmptyString
+    module_id: NonEmptyString
+    module_version: NonEmptyString
+    checksum: Checksum
+    artifact: NonEmptyString
+
+
 class Manifest(TopoModel):
     schema_version: Literal["topo.manifest/0.1"]
     context_id: UUID7
@@ -263,7 +272,7 @@ class Manifest(TopoModel):
     mutation_id: UUID7
     recorded_at: AwareDatetime
     modules: tuple[ModulePin, ...] = Field(min_length=1)
-    active_rule_packages: tuple[()] = ()
+    active_rule_packages: tuple[RulePackagePin, ...] = ()
     files: dict[str, Checksum]
 
 
@@ -277,6 +286,7 @@ class JournalEntry(TopoModel):
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
+        "rule.activate",
     ]
     actor: Actor
     reason: NonEmptyString
@@ -327,6 +337,18 @@ class MutationRequest(TopoModel):
     expected_generation: UUID7
     actor: Actor
     reason: NonEmptyString
+
+
+class RulePackageRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    context_id: UUID7
+    expected_generation: UUID7
+    rule_package_yaml: NonEmptyString
+
+
+class RuleActivateRequest(MutationRequest):
+    rule_package_yaml: NonEmptyString
+    authorization: Authorization | None
 
 
 class SourceAdapter(TopoModel):

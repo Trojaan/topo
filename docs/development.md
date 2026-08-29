@@ -103,4 +103,11 @@ entity target, money, effective date, and reason. A value override must be dated
 exactly on the scenario date. The response returns separate `baseline`, `scenario`,
 and `delta` views and never changes `CURRENT`.
 
+Validate and preview a declarative package with `rule validate` and `rule preview`.
+Pass its YAML through the JSON field `rule_package_yaml`, or use `--rules` with a
+local YAML file. Both requests include the current `context_id` and
+`expected_generation`. Activation uses `rule activate` with mutation metadata;
+first send `authorization: null`, then bind explicit human authorization to the
+returned `preview_ref`. Only the authorized call may advance `CURRENT`.
+
 Never use real financial data in tests or committed fixtures.

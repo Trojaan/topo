@@ -33,6 +33,9 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   delta components without creating a canonical generation.
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
+- `rules.py` parses safe YAML into a closed typed model and owns the trusted
+  registry of versioned input views, predicates, arguments, and outcome
+  capabilities. It cannot import the engine or storage.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
   atomic publication, and crash recovery. Its checksummed evidence inventory
   contains opaque paths only; canonical validation remains an engine concern.
@@ -55,6 +58,12 @@ generation, durably updates the journal, and atomically switches `CURRENT`.
 Operation IDs make retries safe. Expected-generation checks prevent stale writers.
 Packages created before opaque evidence inventories are bootstrapped only when
 their external evidence directory is empty; non-empty ambiguous state fails closed.
+
+Rule-package validation and preview load the current generation but never publish.
+Activation is an ordinary EngineCore mutation: a human authorization is bound to
+the package checksum and expected generation, the complete normalized package is
+checksummed into the new generation, and the manifest switches its module's whole
+package pin atomically. Later mutations carry active rule artifacts forward.
 
 Source imports derive one stable local account entity from the adapter and literal
 source-account identity. The literal posting remains preserved in evidence; the

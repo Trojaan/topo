@@ -25,6 +25,7 @@ from topo.models import (
     SourceImportRecord,
     SourceRecordEvidenceRecord,
 )
+from topo.rules import default_rule_registry, parse_rule_package, validate_rule_package
 from topo.storage import StoredPackageSnapshot
 
 
@@ -420,10 +421,38 @@ MANIFEST_SCHEMA = {
                 },
             },
         },
-        "active_rule_packages": {"type": "array", "maxItems": 0},
+        "active_rule_packages": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "package_id",
+                    "package_version",
+                    "module_id",
+                    "module_version",
+                    "checksum",
+                    "artifact",
+                ],
+                "properties": {
+                    "package_id": {"type": "string", "minLength": 1},
+                    "package_version": {"type": "string", "minLength": 1},
+                    "module_id": {"type": "string", "minLength": 1},
+                    "module_version": {"type": "string", "minLength": 1},
+                    "checksum": {"type": "string", "pattern": r"^sha256:[0-9a-f]{64}$"},
+                    "artifact": {
+                        "type": "string",
+                        "pattern": r"^rule-package\.[a-z0-9_.-]+\.json$",
+                    },
+                },
+            },
+        },
         "files": {
             "type": "object",
-            "additionalProperties": False,
+            "additionalProperties": {
+                "type": "string",
+                "pattern": r"^sha256:[0-9a-f]{64}$",
+            },
             "required": list(COLLECTION_SCHEMAS),
             "properties": {
                 filename: {"type": "string", "pattern": r"^sha256:[0-9a-f]{64}$"}
@@ -443,6 +472,7 @@ class ValidatedPackage:
     proposals: CanonicalCollection[ProposalRecord]
     journal: Journal
     source_records: dict[str, bytes]
+    rule_package_files: dict[str, bytes]
     initialization_result: ContextInitResult
 
 
@@ -450,7 +480,17 @@ def _validate_snapshot(
     snapshot: StoredPackageSnapshot, *, require_journal_tip: bool = True
 ) -> ValidatedPackage:
     generation_files = snapshot.generation_files
-    expected_files = {*COLLECTION_SCHEMAS, "manifest.json"}
+    manifest_payload = generation_files.get("manifest.json")
+    if manifest_payload is None:
+        raise PackageIntegrityError("generation has no manifest")
+    manifest_value = json.loads(manifest_payload.decode("utf-8"))
+    checker = FormatChecker()
+    Draft202012Validator(MANIFEST_SCHEMA, format_checker=checker).validate(
+        manifest_value
+    )
+    manifest_mapping = cast(JsonObject, manifest_value)
+    manifest_files = cast(dict[str, str], manifest_mapping["files"])
+    expected_files = {*manifest_files, "manifest.json"}
     if set(generation_files) != expected_files:
         raise PackageIntegrityError("generation has missing or unexpected files")
 
@@ -458,11 +498,7 @@ def _validate_snapshot(
         filename: json.loads(payload.decode("utf-8"))
         for filename, payload in generation_files.items()
     }
-    checker = FormatChecker()
     manifest_value = parsed["manifest.json"]
-    Draft202012Validator(MANIFEST_SCHEMA, format_checker=checker).validate(
-        manifest_value
-    )
     for filename, schema in COLLECTION_SCHEMAS.items():
         collection_value = parsed[filename]
         Draft202012Validator(schema, format_checker=checker).validate(collection_value)
@@ -472,10 +508,28 @@ def _validate_snapshot(
         if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise ValueError(f"{filename} records must have unique sorted ids")
         checksum = "sha256:" + hashlib.sha256(generation_files[filename]).hexdigest()
-        manifest_mapping = cast(JsonObject, manifest_value)
-        manifest_files = cast(dict[str, str], manifest_mapping["files"])
         if manifest_files[filename] != checksum:
             raise PackageIntegrityError(f"checksum mismatch for {filename}")
+
+    rule_package_files = {
+        filename: generation_files[filename]
+        for filename in manifest_files
+        if filename.startswith("rule-package.")
+    }
+    if set(manifest_files) != {*COLLECTION_SCHEMAS, *rule_package_files}:
+        raise PackageIntegrityError("manifest contains unsupported generation files")
+    raw_pins = cast(list[JsonObject], manifest_mapping["active_rule_packages"])
+    pinned_artifacts = {cast(str, pin["artifact"]) for pin in raw_pins}
+    if set(rule_package_files) != pinned_artifacts:
+        raise PackageIntegrityError("rule package artifacts do not match active pins")
+    for raw_pin in raw_pins:
+        artifact = cast(str, raw_pin["artifact"])
+        payload = rule_package_files.get(artifact)
+        if payload is None:
+            raise PackageIntegrityError("active rule package artifact is missing")
+        checksum = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if checksum != raw_pin["checksum"] or manifest_files[artifact] != checksum:
+            raise PackageIntegrityError("active rule package checksum mismatch")
 
     manifest = Manifest.model_validate_json(
         generation_files["manifest.json"], strict=True
@@ -483,6 +537,26 @@ def _validate_snapshot(
     module_ids = [module.module_id for module in manifest.modules]
     if len(module_ids) != len(set(module_ids)):
         raise PackageIntegrityError("manifest module pins must be unique")
+    rule_modules = [pin.module_id for pin in manifest.active_rule_packages]
+    if len(rule_modules) != len(set(rule_modules)):
+        raise PackageIntegrityError("active rule packages must be unique per module")
+    pinned_versions = {pin.module_id: pin.module_version for pin in manifest.modules}
+    for pin in manifest.active_rule_packages:
+        package = parse_rule_package(rule_package_files[pin.artifact].decode("utf-8"))
+        validate_rule_package(
+            package,
+            default_rule_registry(),
+            pinned_modules=pinned_versions,
+        )
+        if (
+            package.package_id != pin.package_id
+            or package.package_version != pin.package_version
+            or package.module_id != pin.module_id
+            or package.module_version != pin.module_version
+        ):
+            raise PackageIntegrityError(
+                "active rule package pin does not match artifact"
+            )
     entities = CanonicalCollection[EntityRecord].model_validate_json(
         generation_files["entities.json"], strict=True
     )
@@ -835,6 +909,7 @@ def _validate_snapshot(
         proposals=proposals,
         journal=journal,
         source_records=source_records,
+        rule_package_files=rule_package_files,
         initialization_result=result,
     )
 

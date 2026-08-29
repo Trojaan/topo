@@ -28,6 +28,9 @@ COMMANDS = (
     "proposal.correct",
     "proposal.reject",
     "analyze.run",
+    "rule.validate",
+    "rule.preview",
+    "rule.activate",
 )
 SCHEMA_COMMANDS = (
     *COMMANDS,
@@ -41,6 +44,7 @@ MUTATING_COMMANDS = {
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
+    "rule.activate",
 }
 
 
@@ -256,6 +260,14 @@ def _mutation_input(command: str) -> SchemaObject:
             }
         )
         required.extend(["adapter", "records", "authorization"])
+    if command == "rule.activate":
+        properties.update(
+            {
+                "rule_package_yaml": {"type": "string", "minLength": 1},
+                "authorization": {"oneOf": [_authorization(), {"type": "null"}]},
+            }
+        )
+        required.extend(["rule_package_yaml", "authorization"])
     if command == "proposal.submit":
         properties["proposal"] = _closed_object(
             {
@@ -412,6 +424,15 @@ def input_schema(command: str) -> SchemaObject:
             }
         )
         required.extend(["context_id", "analysis_scope", "as_of_date"])
+    elif command in {"rule.validate", "rule.preview"}:
+        properties.update(
+            {
+                "context_id": _uuid7(),
+                "expected_generation": _uuid7(),
+                "rule_package_yaml": {"type": "string", "minLength": 1},
+            }
+        )
+        required.extend(["context_id", "expected_generation", "rule_package_yaml"])
     elif command == "analyze.run":
         properties.update(
             {
@@ -701,6 +722,106 @@ def _result_schema(command: str) -> SchemaObject:
         return _closed_object(
             {"proposal_id": _uuid7()},
             ("proposal_id",),
+        )
+    if command in {"rule.validate", "rule.preview"}:
+        validation_properties: SchemaObject = {
+            "valid": {"const": True},
+            "validated_generation": _uuid7(),
+            "package_id": {"type": "string", "minLength": 1},
+            "package_version": {"type": "string", "minLength": 1},
+            "module_id": {"type": "string", "minLength": 1},
+            "checksum": {"type": "string", "pattern": r"^sha256:[0-9a-f]{64}$"},
+            "rule_count": {"type": "integer", "minimum": 1},
+            "rule_types": {
+                "type": "array",
+                "items": {
+                    "enum": [
+                        "recognition",
+                        "validation",
+                        "completeness",
+                        "question_priority",
+                    ]
+                },
+            },
+        }
+        required = tuple(validation_properties)
+        if command == "rule.preview":
+            effect = _closed_object(
+                {
+                    "action": {"const": "replace_rule_package"},
+                    "module_id": {"type": "string", "minLength": 1},
+                    "package_id": {"type": "string", "minLength": 1},
+                    "package_version": {"type": "string", "minLength": 1},
+                },
+                ("action", "module_id", "package_id", "package_version"),
+            )
+            condition = _closed_object(
+                {
+                    "predicate": {"type": "string", "minLength": 1},
+                    "args": {"type": "object"},
+                    "result": {"type": "boolean"},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                ("predicate", "args", "result", "reason"),
+            )
+            evaluation = _closed_object(
+                {
+                    "package_id": {"type": "string", "minLength": 1},
+                    "package_version": {"type": "string", "minLength": 1},
+                    "rule_id": {"type": "string", "minLength": 1},
+                    "rule_version": {"type": "string", "minLength": 1},
+                    "rule_type": {
+                        "enum": [
+                            "recognition",
+                            "validation",
+                            "completeness",
+                            "question_priority",
+                        ]
+                    },
+                    "input_view": {"type": "string", "minLength": 1},
+                    "conditions": {"type": "array", "items": condition},
+                    "matched": {"type": "boolean"},
+                    "outcome": {"type": "string", "minLength": 1},
+                },
+                (
+                    "package_id",
+                    "package_version",
+                    "rule_id",
+                    "rule_version",
+                    "rule_type",
+                    "input_view",
+                    "conditions",
+                    "matched",
+                    "outcome",
+                ),
+            )
+            validation_properties.update(
+                {
+                    "preview_ref": {
+                        "type": "string",
+                        "pattern": r"^preview:sha256:[0-9a-f]{64}$",
+                    },
+                    "effects": {"type": "array", "items": effect},
+                    "evaluations": {"type": "array", "items": evaluation},
+                }
+            )
+            required = tuple(validation_properties)
+        return _closed_object(validation_properties, required)
+    if command == "rule.activate":
+        return _closed_object(
+            {
+                "package_id": {"type": "string", "minLength": 1},
+                "package_version": {"type": "string", "minLength": 1},
+                "module_id": {"type": "string", "minLength": 1},
+                "checksum": {"type": "string", "pattern": r"^sha256:[0-9a-f]{64}$"},
+                "rule_count": {"type": "integer", "minimum": 1},
+                "preview_ref": {
+                    "type": "string",
+                    "pattern": r"^preview:sha256:[0-9a-f]{64}$",
+                },
+                "effects": {"type": "array"},
+            },
+            ("package_id", "package_version", "module_id", "checksum", "rule_count"),
         )
     if command == "validate":
         return _closed_object(

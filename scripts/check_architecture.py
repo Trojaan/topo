@@ -59,6 +59,15 @@ FORBIDDEN: dict[str, set[str]] = {
         "engine",
         "storage",
     },
+    "rules": {
+        "builtin_modules",
+        "canonical_validation",
+        "cli",
+        "contracts",
+        "engine",
+        "modules",
+        "storage",
+    },
     "canonical_validation": {"builtin_modules", "cli", "contracts", "engine"},
     "storage": {
         "builtin_modules",

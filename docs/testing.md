@@ -36,6 +36,10 @@ original-currency subtotal survival, missing-rate isolation, missing valuation
 visibility, conflict localization, and an unavailable empty result without a zero
 default.
 
+The rule-package journey proves safe-YAML and capability validation, effect-free
+preview traces, explicit human authorization, atomic full-package activation,
+checksum-bound manifest pins, and stale-manifest conflict handling.
+
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.

@@ -34,6 +34,16 @@ returns `INSUFFICIENT_PATTERN_HISTORY` instead of inventing a pattern when the
 minimum history is absent. A candidate only enters canonical history when its
 submit-ready proposal is explicitly passed to `proposal submit`.
 
+Declarative rule packages are complete, versioned module artifacts. `rule
+validate` accepts only the registered recognition, validation, completeness, and
+question-priority capabilities; unknown predicates, cross-view fields, custom
+YAML tags, free expressions, and mismatched outcomes fail closed. `rule preview`
+is effect-free and returns an explanation trace for every rule, predicate,
+input-view, and condition. `rule activate` requires a human authorization bound to
+that preview and the current manifest generation; successful activation replaces
+the module's full package atomically without granting rules code, storage, query,
+or context-mutation access.
+
 `analyze run` with `analysis.normalized_monthly_cashflow` reads confirmed recurring
 cashflows for one explicit scope at `as_of_date`. It converts weekly, four-weekly,
 monthly, quarterly, and annual amounts to a month without mutating the context.

@@ -43,10 +43,13 @@ from topo.models import (
     ProposalSubmitRequest,
     Ref,
     ResponseEnvelope,
+    RuleActivateRequest,
+    RulePackageRequest,
     SourceImportRequest,
     Trace,
     model_to_json_object,
 )
+from topo.rules import RulePackageError
 from topo.storage import FileSystemStorageAdapter
 
 
@@ -87,6 +90,10 @@ def _normalize_request(
         if "records" in normalized:
             raise ValueError("provide records in JSON or --records-csv, not both")
         normalized["records"] = _records_from_csv(args.records_csv)
+    if command.startswith("rule.") and args.rules is not None:
+        if "rule_package_yaml" in normalized:
+            raise ValueError("provide rule_package_yaml in JSON or --rules, not both")
+        normalized["rule_package_yaml"] = args.rules.read_text(encoding="utf-8")
     return normalized
 
 
@@ -249,6 +256,12 @@ def _parser() -> argparse.ArgumentParser:
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
     analyze_run = analyze_commands.add_parser("run")
     analyze_run.add_argument("--package", type=Path, required=True)
+    rule = commands.add_parser("rule")
+    rule_commands = rule.add_subparsers(dest="rule_command", required=True)
+    for name in ("validate", "preview", "activate"):
+        rule_command = rule_commands.add_parser(name)
+        rule_command.add_argument("--package", type=Path, required=True)
+        rule_command.add_argument("--rules", type=Path)
     return parser
 
 
@@ -282,6 +295,8 @@ def _mutation_envelope(
         if command.startswith("proposal."):
             request_template["proposal_ref"] = request.get("proposal_ref")
             reason_code = "PROPOSAL_DECISION_REQUIRES_AUTHORIZATION"
+        if command == "rule.activate":
+            reason_code = "RULE_ACTIVATION_REQUIRES_AUTHORIZATION"
         next_actions = (
             {
                 "action_id": uuid7(),
@@ -405,6 +420,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"discover.{args.discover_command}"
     elif args.group == "analyze":
         command = f"analyze.{args.analyze_command}"
+    elif args.group == "rule":
+        command = f"rule.{args.rule_command}"
     else:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
@@ -492,6 +509,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        if command in {"rule.validate", "rule.preview"}:
+            rule_request = RulePackageRequest.model_validate_json(
+                json.dumps(request), strict=True
+            )
+            engine = EngineCore(FileSystemStorageAdapter(args.package))
+            rule_result = (
+                engine.validate_rules(rule_request)
+                if command == "rule.validate"
+                else engine.preview_rules(rule_request)
+            )
+            generation = str(rule_result["validated_generation"])
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    rule_result,
+                    context_id=rule_request.context_id,
+                    generation_before=generation,
+                    generation_after=generation,
+                )
+            )
+            return 0
+        if command == "rule.activate":
+            outcome = EngineCore(FileSystemStorageAdapter(args.package)).activate_rules(
+                RuleActivateRequest.model_validate_json(
+                    json.dumps(request), strict=True
+                )
+            )
+            _write_json(_mutation_envelope(command, request, outcome))
+            return 0
         if command.startswith("proposal."):
             engine = EngineCore(FileSystemStorageAdapter(args.package))
             if command == "proposal.submit":
@@ -571,6 +618,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ProposalDecisionError as error:
         _write_json(_proposal_rejection_envelope(command, request, error))
+        return 0
+    except RulePackageError as error:
+        _write_json(
+            _error_envelope(
+                command,
+                request,
+                code=error.code,
+                message_key=f"diagnostic.{error.code.lower()}",
+                path=error.path,
+                params={"reason": error.reason},
+                retryable=False,
+            )
+        )
         return 0
     except StaleGenerationError as error:
         stale = MutationOutcome(

@@ -283,6 +283,9 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "proposal.correct",
         "proposal.reject",
         "analyze.run",
+        "rule.validate",
+        "rule.preview",
+        "rule.activate",
     }
 
     available = run_topo_exact(
