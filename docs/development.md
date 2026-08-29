@@ -65,4 +65,17 @@ The response keeps `generation_before` and `generation_after` equal. To retain a
 selected candidate, copy its `proposal` object into an explicit `proposal submit`
 request.
 
+Run an effect-free realized cashflow analysis with an `analyze.run` request. Use
+`analysis_id` `analysis.realized_monthly_cashflow`, contract version `0.1`, an
+explicit scope, a calendar-month `period` with exclusive `end_date`, and a
+reporting currency:
+
+```bash
+uv run topo analyze run --package /tmp/example.topo --request /tmp/analyze.json --json
+```
+
+The source import result exposes stable `account_refs`. Confirm household
+allocation and `domain.accounts/transaction_coverage` assertions on those account
+entities before expecting complete month totals.
+
 Never use real financial data in tests or committed fixtures.

@@ -114,8 +114,10 @@ class ValidTime(TopoModel):
 
 class EntityRecord(TopoModel):
     id: UUID7
-    entity_type: Literal["context", "person", "household", "transaction"]
-    module_id: Literal["topo.core", "domain.parties", "domain.cashflow"]
+    entity_type: Literal["context", "person", "household", "account", "transaction"]
+    module_id: Literal[
+        "topo.core", "domain.parties", "domain.accounts", "domain.cashflow"
+    ]
     created_at: AwareDatetime
 
 
@@ -358,6 +360,54 @@ class SourceImportRequest(MutationRequest):
 class AnalysisScope(TopoModel):
     scope_type: Literal["person", "household"]
     entity_id: UUID7
+
+
+class AnalysisPeriod(TopoModel):
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def is_one_calendar_month(self) -> AnalysisPeriod:
+        if self.start_date.day != 1:
+            raise ValueError("realized cashflow period must start on the first day")
+        next_month = (
+            date(self.start_date.year + 1, 1, 1)
+            if self.start_date.month == 12
+            else date(self.start_date.year, self.start_date.month + 1, 1)
+        )
+        if self.end_date != next_month:
+            raise ValueError(
+                "realized cashflow period must be one half-open calendar month"
+            )
+        return self
+
+
+class ReportingCurrency(TopoModel):
+    currency: Currency
+    allowed_rate_assertion_refs: tuple[Ref, ...]
+
+
+class TransactionCoverageValue(TopoModel):
+    start_date: date
+    end_exclusive: date
+
+    @model_validator(mode="after")
+    def ordered_period(self) -> TransactionCoverageValue:
+        if self.end_exclusive <= self.start_date:
+            raise ValueError("transaction coverage must be a non-empty period")
+        return self
+
+
+class AnalyzeRunRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    analysis_id: Literal["analysis.realized_monthly_cashflow"]
+    analysis_contract_version: Literal["0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    period: AnalysisPeriod
+    reporting_currency: ReportingCurrency | None = None
+    scenario: None
 
 
 class DiscoveryRequest(TopoModel):

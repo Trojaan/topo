@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -18,6 +19,7 @@ from topo.errors import (
 from topo.identifiers import uuid7
 from topo.models import (
     Actor,
+    AnalyzeRunRequest,
     AssertionRecord,
     Authorization,
     CanonicalCollection,
@@ -52,6 +54,7 @@ from topo.models import (
     model_to_json_object,
 )
 from topo.modules import ModuleCatalog
+from topo.realized_cashflow import analyze_realized_monthly_cashflow
 from topo.recognition import TransactionObservation, recognize_recurring_cashflows
 from topo.storage import (
     PackageCommit,
@@ -90,6 +93,15 @@ def _evidence_inventory_bytes(paths: tuple[str, ...]) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _source_account_id(adapter_id: str, source_id: str) -> str:
+    digest = bytearray(
+        hashlib.sha256(f"{adapter_id}\x1f{source_id}".encode()).digest()[:16]
+    )
+    digest[6] = (digest[6] & 0x0F) | 0x70
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(digest)))
 
 
 class EngineCore:
@@ -137,6 +149,10 @@ class EngineCore:
             result=validated.initialization_result,
             replayed=False,
         )
+
+    def analyze(self, request: AnalyzeRunRequest) -> JsonObject:
+        validated = self._load_existing()
+        return analyze_realized_monthly_cashflow(validated, request)
 
     def submit_proposal(self, request: ProposalSubmitRequest) -> MutationOutcome:
         validated = self._load_existing()
@@ -267,11 +283,25 @@ class EngineCore:
         evidence = list(validated.evidence.records)
         proposals = list(validated.proposals.records)
         evidence_refs: list[Ref] = []
+        account_refs: dict[str, Ref] = {}
         transaction_refs: list[Ref] = []
         source_records: dict[str, bytes] = {}
         imported = 0
 
         for record in request.records:
+            account_id = _source_account_id(
+                request.adapter.adapter_id, record.source_id
+            )
+            if not any(entity.id == account_id for entity in entities):
+                entities.append(
+                    EntityRecord(
+                        id=account_id,
+                        entity_type="account",
+                        module_id="domain.accounts",
+                        created_at=now,
+                    )
+                )
+            account_refs[account_id] = Ref(ref_type="entity", id=account_id)
             prior = self._latest_source_evidence(
                 tuple(evidence), request.adapter.adapter_id, record
             )
@@ -386,6 +416,10 @@ class EngineCore:
         result: JsonObject = {
             "imported": imported,
             "evidence_refs": [ref.model_dump(mode="json") for ref in evidence_refs],
+            "account_refs": [
+                ref.model_dump(mode="json")
+                for ref in sorted(account_refs.values(), key=lambda item: item.id)
+            ],
             "transaction_refs": [
                 ref.model_dump(mode="json") for ref in transaction_refs
             ],

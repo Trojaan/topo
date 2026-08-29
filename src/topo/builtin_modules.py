@@ -12,6 +12,7 @@ from topo.models import (
     EntityRecord,
     ProposedAssertion,
     RecurringCashflowValue,
+    TransactionCoverageValue,
 )
 from topo.modules import (
     ENGINE_CONTRACT_VERSION,
@@ -234,6 +235,53 @@ def _validate_recurring_cashflow(
         ) from error
 
 
+def _validate_transaction_coverage(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    del existing
+    if assertion.predicate != "domain.accounts/transaction_coverage":
+        return
+    subject = next(
+        (entity for entity in entities if entity.id == assertion.subject_ref.id), None
+    )
+    if subject is None or subject.entity_type != "account":
+        raise ProposalDecisionError(
+            "INVALID_TRANSACTION_COVERAGE_SUBJECT",
+            "/proposal/proposed_assertion/subject_ref",
+            "transaction coverage must belong to an account",
+        )
+    if (
+        assertion.object_value is None
+        or assertion.object_value.value_type != "transaction_coverage"
+    ):
+        raise ProposalDecisionError(
+            "INVALID_TRANSACTION_COVERAGE",
+            "/proposal/proposed_assertion/object_value",
+            "transaction coverage requires a typed period",
+        )
+    try:
+        coverage = TransactionCoverageValue.model_validate_json(
+            json.dumps(assertion.object_value.value), strict=True
+        )
+    except ValidationError as error:
+        raise ProposalDecisionError(
+            "INVALID_TRANSACTION_COVERAGE",
+            "/proposal/proposed_assertion/object_value/value",
+            str(error),
+        ) from error
+    if (
+        coverage.start_date != assertion.valid_time.start
+        or coverage.end_exclusive != assertion.valid_time.end_exclusive
+    ):
+        raise ProposalDecisionError(
+            "INVALID_TRANSACTION_COVERAGE",
+            "/proposal/proposed_assertion/valid_time",
+            "coverage value and validity period must match",
+        )
+
+
 def default_module_catalog() -> ModuleCatalog:
     parties = module_descriptor(
         "domain.parties",
@@ -264,6 +312,7 @@ def default_module_catalog() -> ModuleCatalog:
             "domain.accounts/operator",
             "domain.accounts/posting",
             "domain.accounts/position",
+            "domain.accounts/transaction_coverage",
         ),
         constraints=(
             _exclusive_classification_constraint(
@@ -271,9 +320,16 @@ def default_module_catalog() -> ModuleCatalog:
                 ("payment_account", "savings_account", "investment_account"),
             ),
             ModuleConstraint("account-double-counting", _validate_double_counting),
+            ModuleConstraint(
+                "transaction-coverage-shape", _validate_transaction_coverage
+            ),
         ),
     )
     cashflow_names = (
+        "income",
+        "expense",
+        "internal_transfer",
+        "unclassified",
         "salary",
         "holiday_allowance",
         "self_employment",

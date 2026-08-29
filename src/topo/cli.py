@@ -30,6 +30,7 @@ from topo.errors import (
 )
 from topo.identifiers import uuid7
 from topo.models import (
+    AnalyzeRunRequest,
     ContextInitRequest,
     Diagnostic,
     DiscoveryRequest,
@@ -243,6 +244,11 @@ def _parser() -> argparse.ArgumentParser:
     discover_commands = discover.add_subparsers(dest="discover_command", required=True)
     discover_run = discover_commands.add_parser("run")
     discover_run.add_argument("--package", type=Path, required=True)
+
+    analyze = commands.add_parser("analyze")
+    analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
+    analyze_run = analyze_commands.add_parser("run")
+    analyze_run.add_argument("--package", type=Path, required=True)
     return parser
 
 
@@ -397,6 +403,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"source.{args.source_command}"
     elif args.group == "discover":
         command = f"discover.{args.discover_command}"
+    elif args.group == "analyze":
+        command = f"analyze.{args.analyze_command}"
     else:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
@@ -461,6 +469,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context_id=discovery_outcome.context_id,
                     generation_before=discovery_outcome.generation_id,
                     generation_after=discovery_outcome.generation_id,
+                )
+            )
+            return 0
+        if command == "analyze.run":
+            analyze_request = AnalyzeRunRequest.model_validate_json(
+                json.dumps(request), strict=True
+            )
+            analysis_result = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).analyze(analyze_request)
+            generation = str(analysis_result["used_generation"])
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    analysis_result,
+                    context_id=analyze_request.context_id,
+                    generation_before=generation,
+                    generation_after=generation,
+                    refs=(Ref(ref_type="generation", id=generation),),
                 )
             )
             return 0

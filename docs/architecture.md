@@ -19,6 +19,8 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   and replay. This is the semantic transaction boundary.
 - `models.py` contains typed canonical records; `canonical_validation.py` checks a
   complete stored snapshot.
+- `realized_cashflow.py` is an effect-free analysis module. It reads validated
+  generations and emits traceable decimal calculations.
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
@@ -43,3 +45,7 @@ generation, durably updates the journal, and atomically switches `CURRENT`.
 Operation IDs make retries safe. Expected-generation checks prevent stale writers.
 Packages created before opaque evidence inventories are bootstrapped only when
 their external evidence directory is empty; non-empty ambiguous state fails closed.
+
+Source imports derive one stable local account entity from the adapter and literal
+source-account identity. The literal posting remains preserved in evidence; the
+entity is the subject for separately confirmed allocation and coverage assertions.

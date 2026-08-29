@@ -52,8 +52,17 @@ def _entity_schema() -> JsonObject:
         "required": ["id", "entity_type", "module_id", "created_at"],
         "properties": {
             "id": _uuid7(),
-            "entity_type": {"enum": ["context", "person", "household", "transaction"]},
-            "module_id": {"enum": ["topo.core", "domain.parties", "domain.cashflow"]},
+            "entity_type": {
+                "enum": ["context", "person", "household", "account", "transaction"]
+            },
+            "module_id": {
+                "enum": [
+                    "topo.core",
+                    "domain.parties",
+                    "domain.accounts",
+                    "domain.cashflow",
+                ]
+            },
             "created_at": {"type": "string", "format": "date-time"},
         },
     }
@@ -758,6 +767,7 @@ def _validate_snapshot(
             "context": "topo.core",
             "person": "domain.parties",
             "household": "domain.parties",
+            "account": "domain.accounts",
             "transaction": "domain.cashflow",
         }[entity.entity_type]
         if entity.module_id != expected_module:

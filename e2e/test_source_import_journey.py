@@ -165,9 +165,11 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
     imported, authorized_request = import_with_authorization(package, request)
     assert imported["outcome"] == "succeeded"
     assert imported["result"]["imported"] == 1
+    assert len(imported["result"]["account_refs"]) == 1
     assert len(imported["result"]["transaction_refs"]) == 1
     assert len(imported["result"]["evidence_refs"]) == 1
     transaction_id = imported["result"]["transaction_refs"][0]["id"]
+    account_id = imported["result"]["account_refs"][0]["id"]
     evidence_id = imported["result"]["evidence_refs"][0]["id"]
 
     generation_id, generation = current_generation(package)
@@ -196,6 +198,13 @@ def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(
         "record_id": "2026-07-25:salary",
         "record_checksum": source_evidence["source"]["record_checksum"],
     }
+    assert {
+        "id": account_id,
+        "entity_type": "account",
+        "module_id": "domain.accounts",
+    }.items() <= next(
+        record.items() for record in entities["records"] if record["id"] == account_id
+    )
     assert source_evidence["record_path"] == f"evidence/records/{evidence_id}.json"
     source_record = json.loads(
         (package / source_evidence["record_path"]).read_text(encoding="utf-8")
@@ -306,6 +315,7 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
         ],
     )
     first, _ = import_with_authorization(package, request)
+    account_ref = first["result"]["account_refs"][0]
     transaction_ref = first["result"]["transaction_refs"][0]
     old_evidence_ref = first["result"]["evidence_refs"][0]
     _, first_generation = current_generation(package)
@@ -336,6 +346,7 @@ def test_source_correction_preserves_history_and_supersedes_prior_meaning(
     assert duplicate["result"] == {
         "imported": 0,
         "evidence_refs": [old_evidence_ref],
+        "account_refs": [account_ref],
         "transaction_refs": [transaction_ref],
     }
 

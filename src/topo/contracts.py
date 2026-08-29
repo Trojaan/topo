@@ -551,9 +551,10 @@ def _result_schema(command: str) -> SchemaObject:
             {
                 "imported": {"type": "integer", "minimum": 0},
                 "evidence_refs": {"type": "array", "items": _ref(("evidence",))},
+                "account_refs": {"type": "array", "items": _ref(("entity",))},
                 "transaction_refs": {"type": "array", "items": _ref(("entity",))},
             },
-            ("imported", "evidence_refs", "transaction_refs"),
+            ("imported", "evidence_refs", "account_refs", "transaction_refs"),
         )
     if command == "discover.run":
         proposal_input = _mutation_input("proposal.submit")
@@ -756,6 +757,20 @@ def _result_schema(command: str) -> SchemaObject:
                 "requirements": {"type": "array", "items": requirement},
                 "blockers": {"type": "array", "items": _diagnostic_schema()},
                 "warnings": {"type": "array", "items": _diagnostic_schema()},
+                "breakdown": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {
+                            "category": {"type": "string", "minLength": 1},
+                            "value": _money(),
+                            "transaction_refs": {
+                                "type": "array",
+                                "items": _ref(("entity",)),
+                            },
+                        },
+                        ("category", "value", "transaction_refs"),
+                    ),
+                },
                 "next_question": {"type": ["string", "null"]},
                 "explain_ref": _ref(("analysis_component",)),
             },

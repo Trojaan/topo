@@ -18,6 +18,13 @@ evidence and assertions; it never replaces the earlier records. Source
 classifications and explanations remain open proposals until a human confirms
 their financial meaning.
 
+`analyze run` with `analysis.realized_monthly_cashflow` reads one explicit,
+half-open calendar month. Confirmed paired transfers are excluded from income and
+expense, while every included posting remains in net movement. Unclassified
+postings make only the category breakdown provisional. Core totals are complete
+only when each included account has a confirmed full household allocation and
+transaction coverage for the whole month.
+
 `discover run` reads the current literal transaction observations without making
 a generation. The cashflow recognition module compares direction, normalized
 description, currency, interval, and amount. It recognizes weekly, four-weekly,
