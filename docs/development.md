@@ -78,4 +78,11 @@ The source import result exposes stable `account_refs`. Confirm household
 allocation and `domain.accounts/transaction_coverage` assertions on those account
 entities before expecting complete month totals.
 
+For the current structural month view, use analysis ID
+`analysis.normalized_monthly_cashflow`, set `period` to `null`, and provide the
+peildatum in `as_of_date`. Only confirmed recurring-cashflow assertions that are
+valid on that date contribute. Fixed amounts produce exact values; ranges keep
+minimum and maximum values, while `typical_money` produces an expected value only
+when it was explicitly confirmed with the range.
+
 Never use real financial data in tests or committed fixtures.

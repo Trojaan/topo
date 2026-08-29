@@ -54,6 +54,7 @@ from topo.models import (
     model_to_json_object,
 )
 from topo.modules import ModuleCatalog
+from topo.normalized_cashflow import analyze_normalized_monthly_cashflow
 from topo.realized_cashflow import analyze_realized_monthly_cashflow
 from topo.recognition import TransactionObservation, recognize_recurring_cashflows
 from topo.storage import (
@@ -152,7 +153,9 @@ class EngineCore:
 
     def analyze(self, request: AnalyzeRunRequest) -> JsonObject:
         validated = self._load_existing()
-        return analyze_realized_monthly_cashflow(validated, request)
+        if request.analysis_id == "analysis.realized_monthly_cashflow":
+            return analyze_realized_monthly_cashflow(validated, request)
+        return analyze_normalized_monthly_cashflow(validated, request)
 
     def submit_proposal(self, request: ProposalSubmitRequest) -> MutationOutcome:
         validated = self._load_existing()

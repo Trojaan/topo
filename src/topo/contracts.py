@@ -27,12 +27,11 @@ COMMANDS = (
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
+    "analyze.run",
 )
 SCHEMA_COMMANDS = (
     *COMMANDS,
-    "discover.run",
     "validate",
-    "analyze.run",
     "explain",
     "workflow.next",
 )
@@ -415,8 +414,13 @@ def input_schema(command: str) -> SchemaObject:
     elif command == "analyze.run":
         properties.update(
             {
-                "analysis_id": {"type": "string", "minLength": 1},
-                "analysis_contract_version": {"type": "string", "minLength": 1},
+                "analysis_id": {
+                    "enum": [
+                        "analysis.realized_monthly_cashflow",
+                        "analysis.normalized_monthly_cashflow",
+                    ]
+                },
+                "analysis_contract_version": {"const": "0.1"},
                 "context_id": _uuid7(),
                 "analysis_scope": _scope(),
                 "as_of_date": {"type": "string", "format": "date"},
@@ -729,6 +733,19 @@ def _result_schema(command: str) -> SchemaObject:
                     "items": {"oneOf": [_ref(), _money()]},
                 },
                 "unrounded_result": _money(),
+                "factor": _closed_object(
+                    {
+                        "multiply_by": {
+                            "type": "string",
+                            "pattern": r"^[1-9][0-9]*$",
+                        },
+                        "divide_by": {
+                            "type": "string",
+                            "pattern": r"^[1-9][0-9]*$",
+                        },
+                    },
+                    ("multiply_by", "divide_by"),
+                ),
             },
             ("step_id", "operation", "inputs", "unrounded_result"),
         )
@@ -737,6 +754,9 @@ def _result_schema(command: str) -> SchemaObject:
                 "component_id": {"type": "string", "minLength": 1},
                 "status": {"enum": ["complete", "provisional", "unavailable"]},
                 "value": _money(),
+                "minimum_value": _money(),
+                "maximum_value": _money(),
+                "expected_value": _money(),
                 "used_assertion_refs": {"type": "array", "items": _ref(("assertion",))},
                 "used_evidence_refs": {"type": "array", "items": _ref(("evidence",))},
                 "assumptions": {

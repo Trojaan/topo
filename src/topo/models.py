@@ -86,6 +86,7 @@ class RecurringCashflowValue(TopoModel):
     expected_period: RecurringExpectedPeriod
     money: Money | None = None
     amount_range: RecurringAmountRange | None = None
+    typical_money: Money | None = None
 
     @model_validator(mode="after")
     def exactly_one_amount(self) -> RecurringCashflowValue:
@@ -94,12 +95,23 @@ class RecurringCashflowValue(TopoModel):
         amounts: tuple[Decimal, ...]
         if self.money is not None:
             amounts = (Decimal(self.money.amount),)
+            if self.typical_money is not None:
+                raise ValueError("typical money is only valid with an amount range")
         else:
             assert self.amount_range is not None
             amounts = (
                 Decimal(self.amount_range.minimum.amount),
                 Decimal(self.amount_range.maximum.amount),
             )
+            if self.typical_money is not None:
+                if self.typical_money.currency != self.amount_range.minimum.currency:
+                    raise ValueError(
+                        "typical money currency must match the amount range"
+                    )
+                typical = Decimal(self.typical_money.amount)
+                if not amounts[0] <= typical <= amounts[1]:
+                    raise ValueError("typical money must fall within the amount range")
+                amounts = (*amounts, typical)
         if self.direction == "inflow" and any(amount <= 0 for amount in amounts):
             raise ValueError("inflow amounts must be positive")
         if self.direction == "outflow" and any(amount >= 0 for amount in amounts):
@@ -398,7 +410,7 @@ class TransactionCoverageValue(TopoModel):
         return self
 
 
-class AnalyzeRunRequest(TopoModel):
+class RealizedAnalyzeRunRequest(TopoModel):
     contract_version: Literal["topo.cli/0.1"]
     analysis_id: Literal["analysis.realized_monthly_cashflow"]
     analysis_contract_version: Literal["0.1"]
@@ -408,6 +420,24 @@ class AnalyzeRunRequest(TopoModel):
     period: AnalysisPeriod
     reporting_currency: ReportingCurrency | None = None
     scenario: None
+
+
+class NormalizedAnalyzeRunRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    analysis_id: Literal["analysis.normalized_monthly_cashflow"]
+    analysis_contract_version: Literal["0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    period: None
+    reporting_currency: ReportingCurrency | None = None
+    scenario: None
+
+
+type AnalyzeRunRequest = Annotated[
+    RealizedAnalyzeRunRequest | NormalizedAnalyzeRunRequest,
+    Field(discriminator="analysis_id"),
+]
 
 
 class DiscoveryRequest(TopoModel):

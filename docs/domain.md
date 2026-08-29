@@ -34,6 +34,12 @@ returns `INSUFFICIENT_PATTERN_HISTORY` instead of inventing a pattern when the
 minimum history is absent. A candidate only enters canonical history when its
 submit-ready proposal is explicitly passed to `proposal submit`.
 
+`analyze run` with `analysis.normalized_monthly_cashflow` reads confirmed recurring
+cashflows for one explicit scope at `as_of_date`. It converts weekly, four-weekly,
+monthly, quarterly, and annual amounts to a month without mutating the context.
+Ranges remain ranges; Topo never invents their midpoint, and only a confirmed
+`typical_money` may contribute to an expected total.
+
 Topo produces traceable facts, calculations, gaps, uncertainties, and scenarios.
 It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human

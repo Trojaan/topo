@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from jsonschema import ValidationError
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from topo.contracts import (
@@ -473,9 +473,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if command == "analyze.run":
-            analyze_request = AnalyzeRunRequest.model_validate_json(
-                json.dumps(request), strict=True
-            )
+            analyze_request: AnalyzeRunRequest = TypeAdapter(
+                AnalyzeRunRequest
+            ).validate_json(json.dumps(request), strict=True)
             analysis_result = EngineCore(
                 FileSystemStorageAdapter(args.package)
             ).analyze(analyze_request)

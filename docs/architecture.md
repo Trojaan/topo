@@ -21,6 +21,9 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   complete stored snapshot.
 - `realized_cashflow.py` is an effect-free analysis module. It reads validated
   generations and emits traceable decimal calculations.
+- `normalized_cashflow.py` is an effect-free analysis module. It selects only
+  confirmed recurring cashflows valid on the requested date and publishes exact
+  frequency factors, unrounded decimal intermediates, and presented totals.
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,

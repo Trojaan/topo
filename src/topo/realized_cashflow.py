@@ -11,10 +11,10 @@ from pydantic import JsonValue
 
 from topo.canonical_validation import ValidatedPackage
 from topo.models import (
-    AnalyzeRunRequest,
     AssertionRecord,
     Diagnostic,
     JsonObject,
+    RealizedAnalyzeRunRequest,
     Ref,
     SourceImportRecord,
     SourceRecordEvidenceRecord,
@@ -114,7 +114,7 @@ def _classification(assertions: tuple[AssertionRecord, ...]) -> str:
 
 
 def _transactions(
-    package: ValidatedPackage, request: AnalyzeRunRequest
+    package: ValidatedPackage, request: RealizedAnalyzeRunRequest
 ) -> tuple[_Transaction, ...]:
     superseded = {
         item.supersedes
@@ -179,7 +179,9 @@ def _transactions(
 
 
 def _relations(
-    package: ValidatedPackage, request: AnalyzeRunRequest, account_id: str
+    package: ValidatedPackage,
+    request: RealizedAnalyzeRunRequest,
+    account_id: str,
 ) -> tuple[AssertionRecord, ...]:
     predicate = (
         "domain.parties/household_allocation"
@@ -203,7 +205,9 @@ def _relations(
 
 
 def _coverage(
-    package: ValidatedPackage, request: AnalyzeRunRequest, account_id: str
+    package: ValidatedPackage,
+    request: RealizedAnalyzeRunRequest,
+    account_id: str,
 ) -> tuple[AssertionRecord, ...]:
     return tuple(
         item
@@ -228,7 +232,7 @@ def _json(value: object) -> JsonValue:
 
 def _component(
     package: ValidatedPackage,
-    request: AnalyzeRunRequest,
+    request: RealizedAnalyzeRunRequest,
     *,
     component_id: str,
     amount: Decimal | None,
@@ -292,7 +296,7 @@ def _component(
 
 
 def analyze_realized_monthly_cashflow(
-    package: ValidatedPackage, request: AnalyzeRunRequest
+    package: ValidatedPackage, request: RealizedAnalyzeRunRequest
 ) -> JsonObject:
     if request.context_id != package.manifest.context_id:
         raise ValueError("request context does not match the package")

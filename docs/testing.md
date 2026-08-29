@@ -26,6 +26,10 @@ The realized-cashflow journey proves half-open month selection, explicit account
 allocation and coverage, paired-transfer exclusion, unclassified net movement,
 component-local provisional status, and effect-free generation reuse.
 
+The normalized-cashflow journey proves confirmed-current selection, candidate and
+expired-fact exclusion, all five frequency factors, decimal intermediates, range
+bounds, explicit typical amounts, and effect-free generation reuse.
+
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.

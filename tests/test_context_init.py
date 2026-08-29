@@ -282,19 +282,21 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
+        "analyze.run",
     }
 
-    unavailable = run_topo_exact(
+    available = run_topo_exact(
         "contract", "schema", "analyze.run", "--json", request=request
     )
-    assert unavailable.returncode != 0
-    assert unavailable.stdout == ""
+    assert available.returncode == 0, available.stderr
+    schema = json.loads(available.stdout)["result"]
+    assert schema["command"] == "analyze.run"
 
 
 def test_contract_validation_enforces_date_formats() -> None:
     request: JsonObject = {
         "contract_version": "topo.cli/0.1",
-        "analysis_id": "analysis.net_worth",
+        "analysis_id": "analysis.normalized_monthly_cashflow",
         "analysis_contract_version": "0.1",
         "context_id": "0198f1a0-0000-7000-8000-000000000001",
         "analysis_scope": {
