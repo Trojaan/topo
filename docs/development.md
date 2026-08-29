@@ -85,4 +85,14 @@ valid on that date contribute. Fixed amounts produce exact values; ranges keep
 minimum and maximum values, while `typical_money` produces an expected value only
 when it was explicitly confirmed with the range.
 
+For conservative net worth, use `analysis.net_worth`, set `period` and `scenario`
+to `null`, and provide the valuation date in `as_of_date`. Confirmed values use
+`domain.accounts/balance`, `domain.assets/value`,
+`jurisdiction.nl/valuation/woz`, `domain.debts/balance`, or
+`domain.pensions/value`, with a `money` object plus `economic_interest_ref` and
+the matching `valuation_basis` in `module_data`. Pass only explicitly allowed,
+date-matching `topo.core/exchange_rate` assertion refs in `reporting_currency`.
+Without such a rate, original-currency subtotals remain usable and the converted
+total is unavailable.
+
 Never use real financial data in tests or committed fixtures.

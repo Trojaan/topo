@@ -418,6 +418,7 @@ def input_schema(command: str) -> SchemaObject:
                     "enum": [
                         "analysis.realized_monthly_cashflow",
                         "analysis.normalized_monthly_cashflow",
+                        "analysis.net_worth",
                     ]
                 },
                 "analysis_contract_version": {"const": "0.1"},

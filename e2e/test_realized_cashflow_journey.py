@@ -68,6 +68,7 @@ def confirm_assertion(
     end_exclusive: str,
     object_ref: str | None = None,
     object_value: dict[str, Any] | None = None,
+    module_data: dict[str, Any] | None = None,
 ) -> str:
     proposed: dict[str, Any] = {
         "subject_ref": {"ref_type": "entity", "id": subject_id},
@@ -75,7 +76,9 @@ def confirm_assertion(
         "valid_time": {"start": start, "end_exclusive": end_exclusive},
         "knowledge_type": "inferred",
         "module_data": (
-            {"distribution": {"complete": True, "shares": ["1"]}}
+            module_data
+            if module_data is not None
+            else {"distribution": {"complete": True, "shares": ["1"]}}
             if predicate == "domain.parties/household_allocation"
             else {}
         ),

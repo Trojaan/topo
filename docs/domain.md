@@ -40,6 +40,13 @@ monthly, quarterly, and annual amounts to a month without mutating the context.
 Ranges remain ranges; Topo never invents their midpoint, and only a confirmed
 `typical_money` may contribute to an expected total.
 
+`analyze run` with `analysis.net_worth` reads current confirmed account balances,
+asset values, debt balances, and pension values by `economic_interest_ref`.
+Directly scoped values or values with a complete explicit allocation contribute
+once. Restricted pension remains a separate component. Original-currency
+subtotals survive missing exchange rates; only dependent totals become
+unavailable. Missing values stay visible and conflicts remain local.
+
 Topo produces traceable facts, calculations, gaps, uncertainties, and scenarios.
 It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human

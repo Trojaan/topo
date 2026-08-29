@@ -10,6 +10,8 @@ from topo.errors import ProposalDecisionError
 from topo.models import (
     AssertionRecord,
     EntityRecord,
+    ExchangeRateValue,
+    Money,
     ProposedAssertion,
     RecurringCashflowValue,
     TransactionCoverageValue,
@@ -85,6 +87,81 @@ def _validate_double_counting(
             "/proposal/proposed_assertion/module_data/valuation_basis",
             "the proposed meaning demonstrably double counts another value",
         )
+
+
+_VALUATION_CONTRACTS = {
+    "domain.accounts/balance": "account_balance",
+    "domain.assets/value": "asset_value",
+    "jurisdiction.nl/valuation/woz": "asset_value",
+    "domain.debts/balance": "debt_balance",
+    "domain.pensions/value": "pension_value",
+}
+
+
+def _validate_valuation_shape(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    del existing, entities
+    expected_basis = _VALUATION_CONTRACTS.get(assertion.predicate)
+    if expected_basis is None:
+        return
+    if assertion.object_value is None or assertion.object_value.value_type != "money":
+        raise ProposalDecisionError(
+            "INVALID_VALUATION",
+            "/proposal/proposed_assertion/object_value",
+            "a valuation requires a typed money value",
+        )
+    try:
+        money = Money.model_validate(assertion.object_value.value, strict=True)
+    except ValidationError as error:
+        raise ProposalDecisionError(
+            "INVALID_VALUATION",
+            "/proposal/proposed_assertion/object_value/value",
+            str(error),
+        ) from error
+    interest = assertion.module_data.get("economic_interest_ref")
+    basis = assertion.module_data.get("valuation_basis")
+    if not isinstance(interest, str) or not interest or basis != expected_basis:
+        raise ProposalDecisionError(
+            "INVALID_VALUATION",
+            "/proposal/proposed_assertion/module_data",
+            "a valuation requires its economic interest and matching basis",
+        )
+    if expected_basis != "account_balance" and Decimal(money.amount) < 0:
+        raise ProposalDecisionError(
+            "INVALID_VALUATION",
+            "/proposal/proposed_assertion/object_value/value/amount",
+            "asset, debt, and pension values must not be negative",
+        )
+
+
+def _validate_exchange_rate(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    del existing, entities
+    if assertion.predicate != "topo.core/exchange_rate":
+        return
+    if (
+        assertion.object_value is None
+        or assertion.object_value.value_type != "exchange_rate"
+    ):
+        raise ProposalDecisionError(
+            "INVALID_EXCHANGE_RATE",
+            "/proposal/proposed_assertion/object_value",
+            "an exchange rate requires a typed exchange_rate value",
+        )
+    try:
+        ExchangeRateValue.model_validate(assertion.object_value.value, strict=True)
+    except ValidationError as error:
+        raise ProposalDecisionError(
+            "INVALID_EXCHANGE_RATE",
+            "/proposal/proposed_assertion/object_value/value",
+            str(error),
+        ) from error
 
 
 def _validate_dutch_semantics(
@@ -313,6 +390,7 @@ def default_module_catalog() -> ModuleCatalog:
             "domain.accounts/posting",
             "domain.accounts/position",
             "domain.accounts/transaction_coverage",
+            "domain.accounts/balance",
         ),
         constraints=(
             _exclusive_classification_constraint(
@@ -323,6 +401,7 @@ def default_module_catalog() -> ModuleCatalog:
             ModuleConstraint(
                 "transaction-coverage-shape", _validate_transaction_coverage
             ),
+            ModuleConstraint("account-balance-shape", _validate_valuation_shape),
         ),
     )
     cashflow_names = (
@@ -387,7 +466,8 @@ def default_module_catalog() -> ModuleCatalog:
                 "other_asset",
                 "etf",
             ),
-        ),
+        )
+        + ("domain.assets/value",),
         constraints=(
             _exclusive_classification_constraint(
                 "domain.assets",
@@ -401,6 +481,7 @@ def default_module_catalog() -> ModuleCatalog:
                 ),
             ),
             ModuleConstraint("asset-double-counting", _validate_double_counting),
+            ModuleConstraint("asset-value-shape", _validate_valuation_shape),
         ),
     )
     debts = module_descriptor(
@@ -419,6 +500,7 @@ def default_module_catalog() -> ModuleCatalog:
                 ),
             ),
             "domain.debts/collateral",
+            "domain.debts/balance",
         ),
         constraints=(
             _exclusive_classification_constraint(
@@ -432,6 +514,7 @@ def default_module_catalog() -> ModuleCatalog:
                 ),
             ),
             ModuleConstraint("debt-double-counting", _validate_double_counting),
+            ModuleConstraint("debt-balance-shape", _validate_valuation_shape),
         ),
     )
     contracts = module_descriptor(
@@ -487,7 +570,10 @@ def default_module_catalog() -> ModuleCatalog:
             ModuleDependency("domain.contracts", "0.1.0"),
         ),
         capabilities=("classifications", "constraints", "input_views"),
-        public_identifiers=("domain.pensions/entitlement",),
+        public_identifiers=("domain.pensions/entitlement", "domain.pensions/value"),
+        constraints=(
+            ModuleConstraint("pension-value-shape", _validate_valuation_shape),
+        ),
     )
     goals = module_descriptor(
         "domain.goals",
@@ -544,9 +630,15 @@ def default_module_catalog() -> ModuleCatalog:
         constraints=(
             ModuleConstraint("dutch-semantics", _validate_dutch_semantics),
             ModuleConstraint("dutch-double-counting", _validate_double_counting),
+            ModuleConstraint("dutch-valuation-shape", _validate_valuation_shape),
         ),
     )
-    core = module_descriptor("topo.core", capabilities=("graph_invariants",))
+    core = module_descriptor(
+        "topo.core",
+        capabilities=("graph_invariants",),
+        public_identifiers=("topo.core/exchange_rate",),
+        constraints=(ModuleConstraint("exchange-rate-shape", _validate_exchange_rate),),
+    )
     return ModuleCatalog(
         (
             core,

@@ -30,6 +30,12 @@ The normalized-cashflow journey proves confirmed-current selection, candidate an
 expired-fact exclusion, all five frequency factors, decimal intermediates, range
 bounds, explicit typical amounts, and effect-free generation reuse.
 
+The net-worth journey proves explicit allocation, per-interest deduplication,
+account-plus-asset-minus-debt arithmetic, restricted-pension separation,
+original-currency subtotal survival, missing-rate isolation, missing valuation
+visibility, conflict localization, and an unavailable empty result without a zero
+default.
+
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.

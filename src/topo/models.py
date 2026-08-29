@@ -399,6 +399,21 @@ class ReportingCurrency(TopoModel):
     allowed_rate_assertion_refs: tuple[Ref, ...]
 
 
+class ExchangeRateValue(TopoModel):
+    base_currency: Currency
+    quote_currency: Currency
+    rate: DecimalString
+    as_of_date: date
+
+    @model_validator(mode="after")
+    def positive_cross_currency_rate(self) -> ExchangeRateValue:
+        if self.base_currency == self.quote_currency:
+            raise ValueError("an exchange rate must relate distinct currencies")
+        if Decimal(self.rate) <= 0:
+            raise ValueError("an exchange rate must be positive")
+        return self
+
+
 class TransactionCoverageValue(TopoModel):
     start_date: date
     end_exclusive: date
@@ -434,8 +449,20 @@ class NormalizedAnalyzeRunRequest(TopoModel):
     scenario: None
 
 
+class NetWorthAnalyzeRunRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    analysis_id: Literal["analysis.net_worth"]
+    analysis_contract_version: Literal["0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    period: None
+    reporting_currency: ReportingCurrency | None = None
+    scenario: None
+
+
 type AnalyzeRunRequest = Annotated[
-    RealizedAnalyzeRunRequest | NormalizedAnalyzeRunRequest,
+    RealizedAnalyzeRunRequest | NormalizedAnalyzeRunRequest | NetWorthAnalyzeRunRequest,
     Field(discriminator="analysis_id"),
 ]
 

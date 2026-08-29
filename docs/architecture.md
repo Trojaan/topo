@@ -24,6 +24,9 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 - `normalized_cashflow.py` is an effect-free analysis module. It selects only
   confirmed recurring cashflows valid on the requested date and publishes exact
   frequency factors, unrounded decimal intermediates, and presented totals.
+- `net_worth.py` is an effect-free analysis module. It resolves current values by
+  economic interest and explicit scope allocation, keeps restricted pension and
+  original currencies separate, and localizes valuation and conversion gaps.
 - `modules.py` defines the extension contract. `builtin_modules.py` supplies the
   versioned universal and Dutch capabilities.
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,

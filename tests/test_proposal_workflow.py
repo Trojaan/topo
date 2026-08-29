@@ -284,7 +284,11 @@ def test_dutch_woz_requires_its_own_valuation_date_without_partial_effect(
         initialization,
         operation_id="0198f1a0-0000-7000-8000-000000000021",
         predicate="jurisdiction.nl/valuation/woz",
-        module_data={"valuation_date": "2025-01-01"},
+        module_data={
+            "valuation_date": "2025-01-01",
+            "economic_interest_ref": "asset:synthetic-home",
+            "valuation_basis": "asset_value",
+        },
     )
     assert accepted.returncode == 0
     assert accepted_body["outcome"] == "succeeded"
