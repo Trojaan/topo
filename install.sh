@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="arjenvanputten/topo"
+REPO="Trojaan/topo"
 INSTALL_DIR="${TOPO_INSTALL_DIR:-$HOME/.topo/bin}"
 REQUESTED_VERSION="${TOPO_VERSION:-}"
 

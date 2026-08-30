@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "arjenvanputten/topo"
+$Repo = "Trojaan/topo"
 if (-not $InstallDir) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "topo\bin"
 }

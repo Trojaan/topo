@@ -9,13 +9,13 @@ webapplicatie.
 macOS en Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/arjenvanputten/topo/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/arjenvanputten/topo/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex
 ```
 
 De installer downloadt de nieuwste standalone release. Python en `uv` zijn niet
