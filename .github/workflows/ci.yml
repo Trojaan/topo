@@ -18,7 +18,22 @@ jobs:
             exit 1
           fi
 
-  verify:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest
+
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +42,10 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --frozen
-      - run: scripts/verify.sh
+      - run: uv run python scripts/check_architecture.py
+      - run: uv run mypy
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
 
   wheel-smoke:
     runs-on: ubuntu-latest
@@ -40,5 +58,6 @@ jobs:
       - run: uv build
       - run: uv venv --python 3.14 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/*.whl
+      - run: .wheel-venv/bin/python -c "import topo"
       - run: .wheel-venv/bin/topo contract describe --json
       - run: .wheel-venv/bin/topo context init --package "${RUNNER_TEMP}/smoke.topo" --json
