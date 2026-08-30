@@ -16,7 +16,10 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   JSON envelope. It contains no domain decisions.
 - `contracts.py` owns discoverable input/output schemas and request validation.
 - `engine.py` owns mutations, authorization, idempotency, generations, history,
-  and replay. This is the semantic transaction boundary.
+  replay, and orchestration of effect-free analyses. This is the semantic
+  transaction boundary.
+- `context_inventory.py` evaluates goal-bound requirements against validated
+  context and selects typed follow-up actions without publishing a generation.
 - `models.py` contains typed canonical records; `canonical_validation.py` checks a
   complete stored snapshot.
 - `realized_cashflow.py` is an effect-free analysis module. It reads validated

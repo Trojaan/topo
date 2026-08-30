@@ -518,6 +518,18 @@ class NetWorthAnalyzeRunRequest(TopoModel):
     scenario: None
 
 
+class ContextInventoryAnalyzeRunRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    analysis_id: Literal["analysis.context_inventory"]
+    analysis_contract_version: Literal["0.1"]
+    context_id: UUID7
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    period: None
+    reporting_currency: None = None
+    scenario: None
+
+
 class RecurringCashflowChangeAssumption(TopoModel):
     assumption_type: Literal["recurring_cashflow_change"]
     target_ref: Ref
@@ -570,12 +582,21 @@ class ScenarioAnalyzeRunRequest(TopoModel):
 
 
 type AnalyzeRunRequest = Annotated[
-    RealizedAnalyzeRunRequest
+    ContextInventoryAnalyzeRunRequest
+    | RealizedAnalyzeRunRequest
     | NormalizedAnalyzeRunRequest
     | NetWorthAnalyzeRunRequest
     | ScenarioAnalyzeRunRequest,
     Field(discriminator="analysis_id"),
 ]
+
+
+class WorkflowNextRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    context_id: UUID7
+    analysis_id: Literal["analysis.net_worth"]
+    analysis_scope: AnalysisScope
+    as_of_date: date
 
 
 class DiscoveryRequest(TopoModel):

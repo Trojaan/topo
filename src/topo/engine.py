@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue
 
 from topo.builtin_modules import default_module_catalog
 from topo.canonical_validation import ValidatedPackage, load_and_validate_generation
+from topo.context_inventory import inventory_context, next_workflow_action
 from topo.errors import (
     ContextAlreadyExistsError,
     ExplanationReferenceError,
@@ -70,6 +71,7 @@ from topo.models import (
     SourceReference,
     UserStatementEvidenceRecord,
     ValidTime,
+    WorkflowNextRequest,
     model_to_json_object,
 )
 from topo.modules import ModuleCatalog
@@ -188,7 +190,9 @@ class EngineCore:
 
     def analyze(self, request: AnalyzeRunRequest) -> JsonObject:
         validated = self._load_existing()
-        if request.analysis_id == "analysis.realized_monthly_cashflow":
+        if request.analysis_id == "analysis.context_inventory":
+            result = inventory_context(validated, request)
+        elif request.analysis_id == "analysis.realized_monthly_cashflow":
             result = analyze_realized_monthly_cashflow(validated, request)
         elif request.analysis_id == "analysis.normalized_monthly_cashflow":
             result = analyze_normalized_monthly_cashflow(validated, request)
@@ -200,6 +204,13 @@ class EngineCore:
         if isinstance(self._storage, ExplanationStorage):
             self._storage.store_explanations(explanations)
         return indexed
+
+    def workflow_next(self, request: WorkflowNextRequest) -> tuple[JsonObject, str]:
+        validated = self._load_existing()
+        return (
+            next_workflow_action(validated, request),
+            validated.manifest.generation_id,
+        )
 
     def explain(self, ref: str) -> JsonObject:
         validated = self._load_existing()

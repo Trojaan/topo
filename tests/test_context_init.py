@@ -287,18 +287,20 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "proposal.correct",
         "proposal.reject",
         "analyze.run",
+        "workflow.next",
         "rule.validate",
         "rule.preview",
         "rule.activate",
         "explain",
     }
 
-    available = run_topo_exact(
-        "contract", "schema", "analyze.run", "--json", request=request
-    )
-    assert available.returncode == 0, available.stderr
-    schema = json.loads(available.stdout)["result"]
-    assert schema["command"] == "analyze.run"
+    for command in ("analyze.run", "workflow.next"):
+        available = run_topo_exact(
+            "contract", "schema", command, "--json", request=request
+        )
+        assert available.returncode == 0, available.stderr
+        schema = json.loads(available.stdout)["result"]
+        assert schema["command"] == command
 
 
 def test_contract_validation_enforces_date_formats() -> None:

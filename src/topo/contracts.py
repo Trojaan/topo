@@ -32,6 +32,7 @@ COMMANDS = (
     "proposal.correct",
     "proposal.reject",
     "analyze.run",
+    "workflow.next",
     "rule.validate",
     "rule.preview",
     "rule.activate",
@@ -40,7 +41,6 @@ COMMANDS = (
 SCHEMA_COMMANDS = (
     *COMMANDS,
     "validate",
-    "workflow.next",
 )
 MUTATING_COMMANDS = {
     "context.migrate",
@@ -493,6 +493,7 @@ def input_schema(command: str) -> SchemaObject:
                 "analysis_id": {
                     "enum": [
                         "analysis.realized_monthly_cashflow",
+                        "analysis.context_inventory",
                         "analysis.normalized_monthly_cashflow",
                         "analysis.net_worth",
                         "analysis.scenario_comparison",
@@ -550,8 +551,15 @@ def input_schema(command: str) -> SchemaObject:
         properties["ref"] = {"type": "string", "minLength": 1}
         required.append("ref")
     elif command == "workflow.next":
-        properties["context_id"] = _uuid7()
-        required.append("context_id")
+        properties.update(
+            {
+                "context_id": _uuid7(),
+                "analysis_id": {"const": "analysis.net_worth"},
+                "analysis_scope": _scope(),
+                "as_of_date": {"type": "string", "format": "date"},
+            }
+        )
+        required.extend(["context_id", "analysis_id", "analysis_scope", "as_of_date"])
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": schema_ref(command, "request"),
@@ -952,6 +960,42 @@ def _result_schema(command: str) -> SchemaObject:
                     ]
                 },
                 "impact": {"type": "string", "minLength": 1},
+                "knowledge_types": {
+                    "type": "array",
+                    "items": {
+                        "enum": [
+                            "observed",
+                            "user_provided",
+                            "inferred",
+                            "calculated",
+                            "assumed",
+                            "projected",
+                        ]
+                    },
+                },
+                "verification_statuses": {
+                    "type": "array",
+                    "items": {
+                        "enum": [
+                            "proposed",
+                            "confirmed",
+                            "rejected",
+                            "superseded",
+                            "unverifiable",
+                        ]
+                    },
+                },
+                "valid_times": {"type": "array", "items": {"type": "object"}},
+                "recorded_times": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "date-time"},
+                },
+                "required_time_coverage": _closed_object(
+                    {"as_of_date": {"type": "string", "format": "date"}},
+                    ("as_of_date",),
+                ),
+                "allocation_state": {"enum": ["allocated", "unallocated", "unknown"]},
+                "next_question": {"type": ["string", "null"]},
             },
             ("requirement", "state", "impact"),
         )
@@ -1058,8 +1102,33 @@ def _result_schema(command: str) -> SchemaObject:
             "used_generation",
             "result_id",
         )
+        domain_count = _closed_object(
+            {
+                "domain_id": {"type": "string", "minLength": 1},
+                "count": {"type": "integer", "minimum": 0},
+                "assertion_refs": {"type": "array", "items": _ref(("assertion",))},
+            },
+            ("domain_id", "count", "assertion_refs"),
+        )
+        inventory_step = _closed_object(
+            {
+                "step_id": {"type": "string", "minLength": 1},
+                "operation": {"const": "count_assertions"},
+                "input_assertion_refs": {
+                    "type": "array",
+                    "items": _ref(("assertion",)),
+                },
+                "result_count": {"type": "integer", "minimum": 0},
+            },
+            ("step_id", "operation", "input_assertion_refs", "result_count"),
+        )
         ordinary_result = _closed_object(
-            {**metadata, "components": {"type": "array", "items": component}},
+            {
+                **metadata,
+                "components": {"type": "array", "items": component},
+                "domain_counts": {"type": "array", "items": domain_count},
+                "inventory_steps": {"type": "array", "items": inventory_step},
+            },
             (*metadata_required, "components"),
         )
         scenario_view = _closed_object(

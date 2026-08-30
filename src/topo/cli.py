@@ -52,6 +52,7 @@ from topo.models import (
     RulePackageRequest,
     SourceImportRequest,
     Trace,
+    WorkflowNextRequest,
     model_to_json_object,
 )
 from topo.rules import RulePackageError
@@ -299,6 +300,11 @@ def _parser() -> argparse.ArgumentParser:
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
     analyze_run = analyze_commands.add_parser("run")
     analyze_run.add_argument("--package", type=Path, required=True)
+
+    workflow = commands.add_parser("workflow")
+    workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_next = workflow_commands.add_parser("next")
+    workflow_next.add_argument("--package", type=Path, required=True)
     rule = commands.add_parser("rule")
     rule_commands = rule.add_subparsers(dest="rule_command", required=True)
     for name in ("validate", "preview", "activate"):
@@ -467,6 +473,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"discover.{args.discover_command}"
     elif args.group == "analyze":
         command = f"analyze.{args.analyze_command}"
+    elif args.group == "workflow":
+        command = f"workflow.{args.workflow_command}"
     elif args.group == "rule":
         command = f"rule.{args.rule_command}"
     elif args.group == "explain":
@@ -580,6 +588,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     request,
                     analysis_result,
                     context_id=analyze_request.context_id,
+                    generation_before=generation,
+                    generation_after=generation,
+                    refs=(Ref(ref_type="generation", id=generation),),
+                )
+            )
+            return 0
+        if command == "workflow.next":
+            workflow_request = WorkflowNextRequest.model_validate_json(
+                json.dumps(request), strict=True
+            )
+            workflow_result, generation = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).workflow_next(workflow_request)
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    workflow_result,
+                    context_id=workflow_request.context_id,
                     generation_before=generation,
                     generation_after=generation,
                     refs=(Ref(ref_type="generation", id=generation),),

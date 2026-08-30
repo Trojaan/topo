@@ -70,6 +70,12 @@ It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human
 review outside the engine.
 
+Context inventory remains available for an otherwise empty package. It reports
+requirements per affected analysis component rather than a global completeness
+score, and keeps missing, conflicting, insufficiently current, and unallocated
+context distinct. `workflow next` selects one deterministic typed follow-up action
+and partial request template without executing or mutating anything.
+
 Lifecycle administration remains an EngineCore mutation. Migration and restore
 always publish a new validated generation; restore never moves `CURRENT` backward.
 Retention is explicit and bounded, preserves requested recovery points, and records

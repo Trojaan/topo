@@ -13,8 +13,10 @@ Run the complete gate with `scripts/verify.sh`. Run only the e2e journey with
 `test-results/e2e/pytest.txt`. Generated evidence is ignored by Git.
 
 The initial journey proves contract discovery, first context publication, the
-client-visible success envelope, canonical persisted state, and refusal to replace
-an already-published package. There is no auth or external service in v0.1, so an
+client-visible success envelope, canonical persisted state, empty-context
+inventory, deterministic effect-free workflow guidance, unknown major-version
+refusal, checksum write blocking, and refusal to replace an already-published
+package. There is no auth or external service in v0.1, so an
 auth/session helper and sandbox credential guard would be theatre; add them when
 such a boundary actually exists.
 
@@ -44,6 +46,13 @@ The context-lifecycle journey proves compatible migration, new-generation restor
 bounded retention with an explicit restore point, and package-wide privacy scrub
 through the public CLI. Unit integration tests additionally prove incompatible
 migration has no effect and scrubbed assertions are marked unverifiable.
+
+Together, `tests/` and `e2e/` are the reproducible v0.1 acceptance suite invoked by
+`scripts/verify.sh`. They cover the three normative handoff journeys—empty context,
+transactions to monthly cashflow, and net worth plus scenario—as well as the
+minimum safety fixtures for replay, authorization, correction, stale generations,
+constraints, currencies, normalization, restricted pension, explanation,
+tampering, and contract-version refusal.
 
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
