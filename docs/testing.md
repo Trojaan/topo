@@ -20,6 +20,13 @@ package. There is no auth or external service in v0.1, so an
 auth/session helper and sandbox credential guard would be theatre; add them when
 such a boundary actually exists.
 
+The workspace journey proves a new directory receives one canonical
+`context.topo/`, private import and package ignore rules, automatically discovered
+Codex and Claude instructions, a read-only status projection, and an idempotent
+second initialization without a new generation. Unit tests additionally prove
+managed-block preservation, CRLF handling, safe updates, and fail-closed marker
+or package conflicts.
+
 The source journey also proves recurring discovery leaves `CURRENT` and proposals
 unchanged, reports insufficient history, and produces a candidate that can be
 selected through the ordinary proposal workflow.
@@ -57,3 +64,7 @@ tampering, and contract-version refusal.
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.
+
+CI also builds one Linux standalone executable on every change. A release tag
+expands this to the five supported platform artifacts and smoke-tests each binary;
+only after publication do installer jobs download and execute the released zips.

@@ -1,0 +1,132 @@
+name: Release standalone CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux-amd64
+            binary: topo
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            binary: topo
+          - runner: macos-15-intel
+            platform: macos-amd64
+            binary: topo
+          - runner: macos-latest
+            platform: macos-arm64
+            binary: topo
+          - runner: windows-latest
+            platform: windows-amd64
+            binary: topo.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          expected="v$(python -c \"import runpy; print(runpy.run_path('src/topo/__about__.py')['__version__'])\")"
+          test "$GITHUB_REF_NAME" = "$expected" || {
+            echo "Tag $GITHUB_REF_NAME does not match package version $expected" >&2
+            exit 1
+          }
+      - run: uv sync --frozen --no-dev --group build
+      - name: Build standalone executable
+        run: uv run pyinstaller --clean topo.spec
+      - name: Smoke-test executable
+        shell: bash
+        run: |
+          executable="dist/${{ matrix.binary }}"
+          "$executable" --version
+          "$executable" contract describe --json
+          "$executable" init "$RUNNER_TEMP/topo-workspace" --json
+          "$executable" context status --package "$RUNNER_TEMP/topo-workspace/context.topo" --json
+      - name: Package Unix executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd dist
+          zip "topo-${{ matrix.platform }}.zip" topo
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/topo.exe -DestinationPath dist/topo-${{ matrix.platform }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: topo-${{ matrix.platform }}
+          path: dist/topo-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/*/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Topo $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
+
+  verify-installers:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            shell_kind: unix
+          - runner: ubuntu-24.04-arm
+            shell_kind: unix
+          - runner: macos-15-intel
+            shell_kind: unix
+          - runner: macos-latest
+            shell_kind: unix
+          - runner: windows-latest
+            shell_kind: windows
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install published release on Unix
+        if: matrix.shell_kind == 'unix'
+        shell: bash
+        env:
+          TOPO_VERSION: ${{ github.ref_name }}
+          TOPO_INSTALL_DIR: ${{ runner.temp }}/topo-bin
+        run: bash install.sh
+      - name: Verify installed Unix CLI
+        if: matrix.shell_kind == 'unix'
+        shell: bash
+        run: |
+          "${RUNNER_TEMP}/topo-bin/topo" --version
+          "${RUNNER_TEMP}/topo-bin/topo" init "${RUNNER_TEMP}/installed-workspace" --json
+      - name: Install published release on Windows
+        if: matrix.shell_kind == 'windows'
+        shell: pwsh
+        run: ./install.ps1 -Version "${{ github.ref_name }}" -InstallDir "$env:RUNNER_TEMP\topo-bin"
+      - name: Verify installed Windows CLI
+        if: matrix.shell_kind == 'windows'
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\topo-bin\topo.exe" --version
+          & "$env:RUNNER_TEMP\topo-bin\topo.exe" init "$env:RUNNER_TEMP\installed-workspace" --json

@@ -40,6 +40,15 @@ For an isolated manual run, create packages below a temporary directory:
 uv run topo context init --package /tmp/example.topo --json
 ```
 
+To exercise the end-user bootstrap instead, create an agent-ready workspace. The
+second invocation is idempotent and may update only Topo-managed marker blocks:
+
+```bash
+uv run topo init /tmp/example-finances
+uv run topo init /tmp/example-finances --json
+uv run topo context status --package /tmp/example-finances/context.topo --json
+```
+
 After initialization, an adapter can submit the versioned `source.import` JSON
 contract through stdin (or `--request`) with:
 
@@ -143,3 +152,22 @@ calculation steps, unrounded intermediates, and rounding. Unknown or damaged
 derived references return an explicit diagnostic with an empty result.
 
 Never use real financial data in tests or committed fixtures.
+
+## Standalone builds and releases
+
+The package version has one source of truth in `src/topo/__about__.py`; Hatchling,
+the wheel, `topo --version`, and PyInstaller all consume it. Build a local
+standalone executable with:
+
+```bash
+uv sync --frozen --no-dev --group build
+uv run pyinstaller --clean topo.spec
+dist/topo --version
+```
+
+Pushing a tag matching `v<package-version>` runs the release matrix for macOS
+x64/arm64, glibc Linux x64/arm64, and Windows x64. Each executable completes the
+contract, workspace-init, and context-status smoke flow before upload. After all
+artifacts are published, the same workflow runs `install.sh` or `install.ps1`
+against the public release. Re-run an installer to upgrade; there is no in-CLI
+self-update command in v0.1.

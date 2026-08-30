@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "topo-context-engine"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local-first financial context engine"
+readme = "README.md"
 requires-python = ">=3.12,<4"
 dependencies = [
   "jsonschema>=4.23,<5",
@@ -21,12 +22,18 @@ dev = [
   "types-jsonschema>=4.23,<5",
   "types-pyyaml>=6.0.12,<7",
 ]
+build = [
+  "pyinstaller>=6.15,<7",
+]
 
 [project.scripts]
 topo = "topo.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/topo"]
+
+[tool.hatch.version]
+path = "src/topo/__about__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "e2e"]

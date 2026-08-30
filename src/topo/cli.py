@@ -12,6 +12,7 @@ from jsonschema import ValidationError
 from pydantic import JsonValue, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from topo import __version__
 from topo.contracts import (
     COMMANDS,
     CONTRACT_VERSION,
@@ -37,6 +38,7 @@ from topo.models import (
     ContextPrivacyScrubRequest,
     ContextRestoreRequest,
     ContextRetentionRequest,
+    ContextStatusRequest,
     Diagnostic,
     DiscoveryRequest,
     JsonObject,
@@ -53,10 +55,12 @@ from topo.models import (
     SourceImportRequest,
     Trace,
     WorkflowNextRequest,
+    WorkspaceInitRequest,
     model_to_json_object,
 )
 from topo.rules import RulePackageError
 from topo.storage import FileSystemStorageAdapter
+from topo.workspace import initialize_workspace
 
 
 class IncompatibleContractVersion(Exception):
@@ -92,6 +96,10 @@ def _normalize_request(
             "actor", {"actor_type": "human", "actor_id": "local-user"}
         )
         normalized.setdefault("reason", "Initialize local Topo context")
+    if command == "workspace.init":
+        normalized["directory"] = str(args.directory)
+    if command == "context.status":
+        normalized["package"] = str(args.package)
     if command == "source.import" and args.records_csv is not None:
         if "records" in normalized:
             raise ValueError("provide records in JSON or --records-csv, not both")
@@ -262,8 +270,14 @@ def _success_envelope(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="topo")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     commands = parser.add_subparsers(dest="group", required=True)
+
+    workspace_init = commands.add_parser("init")
+    workspace_init.add_argument("directory", nargs="?", type=Path, default=Path("."))
 
     contract = commands.add_parser("contract")
     contract_commands = contract.add_subparsers(dest="contract_command", required=True)
@@ -275,6 +289,8 @@ def _parser() -> argparse.ArgumentParser:
     context_commands = context.add_subparsers(dest="context_command", required=True)
     initialize = context_commands.add_parser("init")
     initialize.add_argument("--package", type=Path, required=True)
+    status = context_commands.add_parser("status")
+    status.add_argument("--package", type=Path, required=True)
     for name in ("migrate", "restore", "compact", "privacy-scrub"):
         lifecycle = context_commands.add_parser(name)
         lifecycle.add_argument("--package", type=Path, required=True)
@@ -451,6 +467,18 @@ def _missing_request_path(parser: argparse.ArgumentParser) -> NoReturn:
     parser.error("--request requires a file path")
 
 
+def _write_workspace_text(result: JsonObject, outcome: Outcome) -> None:
+    action = "Initialized" if outcome == "succeeded" else "Workspace already current at"
+    print(f"{action}: {result['workspace']}")
+    print(f"Context: {result['package']}")
+    print(f"Context ID: {result['context_id']}")
+    print(f"Generation: {result['generation_id']}")
+    print()
+    print("Next steps:")
+    print(f"  cd {result['workspace']}")
+    print("  topo context status --package ./context.topo --json")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
     json_output = "--json" in arguments
@@ -463,7 +491,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         request_path = Path(arguments[request_index + 1])
         del arguments[request_index : request_index + 2]
     args = _parser().parse_args(arguments)
-    if args.group == "contract":
+    if args.group == "init":
+        command = "workspace.init"
+    elif args.group == "contract":
         command = f"contract.{args.contract_command}"
     elif args.group == "context":
         command = f"context.{args.context_command.replace('-', '_')}"
@@ -495,6 +525,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _success_envelope(command, request, schema_result(args.command))
             )
             return 0
+        if command == "workspace.init":
+            workspace_request = WorkspaceInitRequest.model_validate(
+                request, strict=True
+            )
+            initialized_workspace = initialize_workspace(workspace_request)
+            workspace_result_json = model_to_json_object(initialized_workspace.result)
+            workspace_outcome: Outcome = (
+                "succeeded" if initialized_workspace.changed else "no_change"
+            )
+            envelope = _success_envelope(
+                command,
+                request,
+                workspace_result_json,
+                context_id=initialized_workspace.result.context_id,
+                generation_before=initialized_workspace.generation_before,
+                generation_after=initialized_workspace.result.generation_id,
+                operation_id=initialized_workspace.operation_id,
+                outcome=workspace_outcome,
+            )
+            if json_output:
+                _write_json(envelope)
+            else:
+                _write_workspace_text(workspace_result_json, workspace_outcome)
+            return 0
         if command == "context.init":
             init_request = ContextInitRequest.model_validate(request, strict=True)
             initialization = EngineCore(
@@ -518,6 +572,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         Ref(ref_type="entity", id=result.household_id),
                     ),
                     outcome="no_change" if initialization.replayed else "succeeded",
+                )
+            )
+            return 0
+        if command == "context.status":
+            status_request = ContextStatusRequest.model_validate(request, strict=True)
+            status_result = EngineCore(
+                FileSystemStorageAdapter(Path(status_request.package))
+            ).context_status()
+            status_result_json = model_to_json_object(status_result)
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    status_result_json,
+                    context_id=status_result.context_id,
+                    generation_before=status_result.generation_id,
+                    generation_after=status_result.generation_id,
                 )
             )
             return 0
@@ -706,6 +777,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     except (ContextAlreadyExistsError, FileExistsError):
+        package_argument = getattr(args, "package", None)
+        if package_argument is None:
+            package_argument = Path(args.directory) / "context.topo"
         _write_json(
             _error_envelope(
                 command,
@@ -713,7 +787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 code="CONTEXT_ALREADY_EXISTS",
                 message_key="diagnostic.context_already_exists",
                 path="/package",
-                params={"package": str(args.package)},
+                params={"package": str(package_argument)},
                 retryable=False,
             )
         )

@@ -61,3 +61,18 @@ jobs:
       - run: .wheel-venv/bin/python -c "import topo"
       - run: .wheel-venv/bin/topo contract describe --json
       - run: .wheel-venv/bin/topo context init --package "${RUNNER_TEMP}/smoke.topo" --json
+
+  standalone-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen --no-dev --group build
+      - run: uv run pyinstaller --clean topo.spec
+      - run: dist/topo --version
+      - run: dist/topo contract describe --json
+      - run: dist/topo init "${RUNNER_TEMP}/workspace" --json
+      - run: dist/topo context status --package "${RUNNER_TEMP}/workspace/context.topo" --json

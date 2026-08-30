@@ -19,6 +19,8 @@ SchemaObject = dict[str, object]
 CONTRACT_VERSION: Literal["topo.cli/0.1"] = "topo.cli/0.1"
 COMMANDS = (
     "context.init",
+    "workspace.init",
+    "context.status",
     "contract.describe",
     "contract.schema",
     "context.migrate",
@@ -469,6 +471,12 @@ def input_schema(command: str) -> SchemaObject:
         required.extend(
             ["package", "operation_id", "expected_generation", "actor", "reason"]
         )
+    elif command == "workspace.init":
+        properties["directory"] = {"type": "string", "minLength": 1}
+        required.append("directory")
+    elif command == "context.status":
+        properties["package"] = {"type": "string", "minLength": 1}
+        required.append("package")
     elif command == "discover.run":
         properties.update(
             {
@@ -587,6 +595,76 @@ def _result_schema(command: str) -> SchemaObject:
             "required": list(names),
             "properties": {name: deepcopy(uuid7) for name in names},
         }
+    if command == "workspace.init":
+        return _closed_object(
+            {
+                "workspace": {"type": "string", "minLength": 1},
+                "package": {"type": "string", "minLength": 1},
+                "context_id": deepcopy(uuid7),
+                "generation_id": deepcopy(uuid7),
+                "person_id": deepcopy(uuid7),
+                "household_id": deepcopy(uuid7),
+                "context_created": {"type": "boolean"},
+                "created_paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "updated_paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "unchanged_paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+            },
+            (
+                "workspace",
+                "package",
+                "context_id",
+                "generation_id",
+                "person_id",
+                "household_id",
+                "context_created",
+                "created_paths",
+                "updated_paths",
+                "unchanged_paths",
+            ),
+        )
+    if command == "context.status":
+        return _closed_object(
+            {
+                "context_id": deepcopy(uuid7),
+                "generation_id": deepcopy(uuid7),
+                "person_id": deepcopy(uuid7),
+                "household_id": deepcopy(uuid7),
+                "package_version": {"type": "string", "minLength": 1},
+                "context_schema_version": {"type": "string", "minLength": 1},
+                "modules": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {
+                            "module_id": {"type": "string", "minLength": 1},
+                            "module_version": {"type": "string", "minLength": 1},
+                            "checksum": {
+                                "type": "string",
+                                "pattern": r"^sha256:[0-9a-f]{64}$",
+                            },
+                        },
+                        ("module_id", "module_version", "checksum"),
+                    ),
+                },
+            },
+            (
+                "context_id",
+                "generation_id",
+                "person_id",
+                "household_id",
+                "package_version",
+                "context_schema_version",
+                "modules",
+            ),
+        )
     if command == "context.migrate":
         return _closed_object(
             {

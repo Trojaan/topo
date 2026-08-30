@@ -5,15 +5,19 @@ database, queue, container, port, or required network service.
 
 ```text
 user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
-                         |             |
-                         |             +-> module catalog / domain constraints
-                         +-> versioned JSON request and response envelopes
+               |         |             |
+               |         |             +-> module catalog / domain constraints
+               |         +-> versioned JSON request and response envelopes
+               +-> workspace adapter -> agent files / privacy ignore rules
 ```
 
 ## Responsibilities
 
 - `cli.py` parses commands, reads request JSON, maps errors, and writes a stable
   JSON envelope. It contains no domain decisions.
+- `workspace.py` scaffolds an agent-ready directory and merges explicitly marked
+  instruction and ignore blocks. It delegates canonical context creation and
+  validation to `EngineCore`; it never writes inside a package itself.
 - `contracts.py` owns discoverable input/output schemas and request validation.
 - `engine.py` owns mutations, authorization, idempotency, generations, history,
   replay, and orchestration of effect-free analyses. This is the semantic
@@ -54,7 +58,7 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 Foundation modules (`identifiers`, `models`, `errors`) must not import orchestration
 or persistence. Contracts and semantic modules may depend on the foundation but
 not on the CLI, engine, or storage. The engine composes semantic and persistence
-boundaries. The CLI is the outermost adapter.
+boundaries. Workspace scaffolding and the CLI are outer adapters.
 
 `scripts/check_architecture.py` enforces this direction and reports the concrete
 remediation when a forbidden import appears.
@@ -67,6 +71,10 @@ generation, durably updates the journal, and atomically switches `CURRENT`.
 Operation IDs make retries safe. Expected-generation checks prevent stale writers.
 Packages created before opaque evidence inventories are bootstrapped only when
 their external evidence directory is empty; non-empty ambiguous state fails closed.
+
+`context status` loads the same fully validated package as every other engine
+operation and projects only its current identity, initialization identities,
+schema versions, and module pins. It never publishes or repairs a generation.
 
 Rule-package validation and preview load the current generation but never publish.
 Activation is an ordinary EngineCore mutation: a human authorization is bound to

@@ -1,3 +1,5 @@
 """Topo local-first financial context engine."""
 
-__version__ = "0.1.0"
+from topo.__about__ import __version__
+
+__all__ = ["__version__"]

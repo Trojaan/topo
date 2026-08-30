@@ -39,6 +39,7 @@ from topo.models import (
     ContextPrivacyScrubRequest,
     ContextRestoreRequest,
     ContextRetentionRequest,
+    ContextStatusResult,
     DiscoveryOutcome,
     DiscoveryRequest,
     EntityRecord,
@@ -269,6 +270,19 @@ class EngineCore:
     def current_identity(self) -> tuple[str, str]:
         validated = self._load_existing()
         return validated.manifest.generation_id, validated.manifest.context_id
+
+    def context_status(self) -> ContextStatusResult:
+        validated = self._load_existing()
+        initialized = validated.initialization_result
+        return ContextStatusResult(
+            context_id=validated.manifest.context_id,
+            generation_id=validated.manifest.generation_id,
+            person_id=initialized.person_id,
+            household_id=initialized.household_id,
+            package_version=validated.manifest.package_version,
+            context_schema_version=validated.manifest.context_schema_version,
+            modules=validated.manifest.modules,
+        )
 
     def migrate_context(self, request: ContextMigrateRequest) -> MutationOutcome:
         validated = self._load_existing()

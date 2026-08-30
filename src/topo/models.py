@@ -323,6 +323,39 @@ class ContextInitResult(TopoModel):
     membership_assertion_id: UUID7
 
 
+class ContextStatusRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    package: NonEmptyString
+
+
+class ContextStatusResult(TopoModel):
+    context_id: UUID7
+    generation_id: UUID7
+    person_id: UUID7
+    household_id: UUID7
+    package_version: NonEmptyString
+    context_schema_version: NonEmptyString
+    modules: tuple[ModulePin, ...]
+
+
+class WorkspaceInitRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    directory: NonEmptyString
+
+
+class WorkspaceInitResult(TopoModel):
+    workspace: NonEmptyString
+    package: NonEmptyString
+    context_id: UUID7
+    generation_id: UUID7
+    person_id: UUID7
+    household_id: UUID7
+    context_created: bool
+    created_paths: tuple[NonEmptyString, ...]
+    updated_paths: tuple[NonEmptyString, ...]
+    unchanged_paths: tuple[NonEmptyString, ...]
+
+
 class InitializationOutcome(TopoModel):
     result: ContextInitResult
     replayed: bool
