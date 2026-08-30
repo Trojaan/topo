@@ -1,16 +1,22 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, BinaryIO, Protocol, cast, runtime_checkable
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 from topo.errors import PackageIntegrityError, StaleGenerationError
 
@@ -79,6 +85,8 @@ def _explanation_filename(ref: str) -> str:
 
 
 def _sync_directory(path: Path) -> None:
+    if sys.platform == "win32":
+        return
     descriptor = os.open(str(path), os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -259,6 +267,34 @@ def _remove_artifact(path: Path) -> None:
         raise OSError(f"unsupported filesystem entry: {path}")
 
 
+if sys.platform == "win32":
+
+    def _lock_file(stream: BinaryIO) -> None:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        while True:
+            stream.seek(0)
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
+
+    def _unlock_file(stream: BinaryIO) -> None:
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+
+    def _lock_file(stream: BinaryIO) -> None:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+
+    def _unlock_file(stream: BinaryIO) -> None:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 @contextmanager
 def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
     flags = os.O_RDWR | os.O_CREAT
@@ -266,12 +302,13 @@ def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
         flags |= os.O_NOFOLLOW
     descriptor = os.open(str(lock_path), flags, 0o600)
     with os.fdopen(descriptor, "a+b") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        if hasattr(os, "fchmod"):
+            os.fchmod(stream.fileno(), 0o600)
+        _lock_file(stream)
         try:
             yield
         finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            _unlock_file(stream)
 
 
 class FileSystemStorageAdapter:
