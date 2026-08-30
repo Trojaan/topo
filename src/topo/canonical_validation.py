@@ -144,8 +144,8 @@ def _assertion_schema() -> JsonObject:
                     "projected",
                 ]
             },
-            "verification_status": {"const": "confirmed"},
-            "provenance": {"type": "array", "minItems": 1, "items": _ref()},
+            "verification_status": {"enum": ["confirmed", "unverifiable"]},
+            "provenance": {"type": "array", "items": _ref()},
             "supersedes": {"oneOf": [_uuid7(), {"type": "null"}]},
             "module_data": {"type": "object"},
         },
@@ -668,10 +668,8 @@ def _validate_snapshot(
                     "source evidence successor lineage is invalid"
                 )
 
-    if require_journal_tip and set(snapshot.evidence_records) != set(source_records):
-        raise PackageIntegrityError(
-            "raw evidence records must exactly match canonical evidence"
-        )
+        if not set(source_records) <= set(snapshot.evidence_records):
+            raise PackageIntegrityError("raw evidence records are incomplete")
 
     evidence_successors = [
         record.supersedes
@@ -920,19 +918,29 @@ def load_and_validate_generation(
     """Turn untrusted package bytes into a completely validated initial package."""
     try:
         current = _validate_snapshot(snapshot)
+        referenced_source_records = set(current.source_records)
         retained = snapshot.retained_generation_files
         if retained is not None:
+            removed_generations = {
+                generation_id
+                for entry in current.journal.entries
+                if entry.operation == "context.compact"
+                for generation_id in cast(
+                    list[str], entry.result.get("removed_generations", [])
+                )
+            }
             expected_retained = {
                 entry.generation_after
                 for entry in current.journal.entries
                 if entry.generation_after != snapshot.current_generation
+                and entry.generation_after not in removed_generations
             }
             if set(retained) != expected_retained:
                 raise PackageIntegrityError(
                     "retained generations do not match the journal"
                 )
             for generation_id, generation_files in retained.items():
-                _validate_snapshot(
+                retained_package = _validate_snapshot(
                     StoredPackageSnapshot(
                         current_generation=generation_id,
                         generation_files=generation_files,
@@ -941,6 +949,11 @@ def load_and_validate_generation(
                     ),
                     require_journal_tip=False,
                 )
+                referenced_source_records.update(retained_package.source_records)
+        if set(snapshot.evidence_records) != referenced_source_records:
+            raise PackageIntegrityError(
+                "raw evidence records do not match retained canonical evidence"
+            )
         return current
     except PackageIntegrityError:
         raise

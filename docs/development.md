@@ -54,6 +54,24 @@ Its required columns are `source_id`, `record_id`, `booking_date`, `amount`,
 `currency`, and `description`; the optional classification is supplied as the
 complete trio `category`, `rule_version`, and `explanation`.
 
+Context lifecycle commands accept their versioned JSON request through stdin or
+`--request`, like every other mutating command:
+
+```bash
+uv run topo context migrate --package /tmp/example.topo --request /tmp/migrate.json --json
+uv run topo context restore --package /tmp/example.topo --request /tmp/restore.json --json
+uv run topo context compact --package /tmp/example.topo --request /tmp/compact.json --json
+uv run topo context privacy-scrub --package /tmp/example.topo --request /tmp/scrub.json --json
+```
+
+Migration names the target package version, context-schema version, and complete
+`target_module_versions` mapping. Restore names one retained generation. Compaction
+requires `retain_latest` between 1 and 100 and may
+protect additional `restore_generations`. Privacy scrub requires one or more
+unique `evidence_ids`; it permanently removes them from the Topo-managed package,
+but cannot erase SSD remnants, operating-system snapshots, synchronized copies,
+or external backups.
+
 Run effect-free recurring cashflow discovery with a `discover.run` request that
 contains `context_id`, `analysis_scope`, and `as_of_date`:
 

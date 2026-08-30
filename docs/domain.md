@@ -70,6 +70,15 @@ It does not produce regulated financial advice or silently fill missing values.
 Material, complex, or potentially regulated decisions require qualified human
 review outside the engine.
 
+Lifecycle administration remains an EngineCore mutation. Migration and restore
+always publish a new validated generation; restore never moves `CURRENT` backward.
+Retention is explicit and bounded, preserves requested recovery points, and records
+removed generation identifiers without copying financial values. Privacy scrub is
+the only package-wide rewrite: selected evidence and dependent proposal history are
+removed from every retained generation, while surviving assertions lose the
+removed provenance and become explicitly `unverifiable` rather than silently
+remaining confirmed. Repeating a scrub after its targets are gone is effect-free.
+
 `explain --ref` resolves proposals and decisions from validated canonical state
 and resolves analysis components, analysis diagnostics, and rule outcomes from a
 checksum-addressed derived index. The index is not financial context and never

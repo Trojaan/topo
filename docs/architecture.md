@@ -39,6 +39,8 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
 - `storage.py` is a meaning-free adapter: locking, staging, durable writes,
   atomic publication, and crash recovery. Its checksummed evidence inventory
   contains opaque paths only; canonical validation remains an engine concern.
+  Retention and privacy operations receive a complete EngineCore-approved rewrite;
+  the adapter only validates, stages, swaps, and removes opaque artifacts.
 - `explanations.py` projects already-decided proposals, decisions, diagnostics,
   rule traces, and analysis components into one locale-independent explanation
   shape. `EngineCore` may cache those opaque bytes under `derived/explanations`;
@@ -72,3 +74,22 @@ package pin atomically. Later mutations carry active rule artifacts forward.
 Source imports derive one stable local account entity from the adapter and literal
 source-account identity. The literal posting remains preserved in evidence; the
 entity is the subject for separately confirmed allocation and coverage assertions.
+
+## Context lifecycle
+
+`context migrate` supports only named target versions known by this engine. It
+builds and validates a complete successor generation before publication; unknown
+package or context-schema versions return a rejected mutation without changing
+`CURRENT`. `context restore` validates a retained generation and copies its state
+into a new generation whose `based_on` remains the generation that was current.
+
+`context compact` publishes a value-free retention decision before pruning. Its
+bounded `retain_latest` value counts the new compact generation, while explicit
+restore generations are protected in addition. Missing historical parents remain
+explained by the compact journal entry and are never silently accepted.
+
+`context privacy-scrub` is the sole immutability exception. EngineCore removes the
+selected evidence from every retained generation and raw evidence record, removes
+dependent proposals, marks surviving dependent assertions `unverifiable`, scrubs
+the identifier from mutation fields, rewrites checksums and inventories, clears
+derived explanations, and validates the resulting package again.

@@ -48,6 +48,24 @@ class ExplanationStorage(Protocol):
     def load_explanation(self, ref: str) -> bytes | None: ...
 
 
+@runtime_checkable
+class RetentionStorage(Protocol):
+    def apply_retention(self, *, expected_generation: str) -> None: ...
+
+
+@runtime_checkable
+class PrivacyStorage(Protocol):
+    def apply_privacy_scrub(
+        self,
+        *,
+        expected_generation: str,
+        generation_files: dict[str, dict[str, bytes]],
+        journal: bytes,
+        evidence_records: dict[str, bytes],
+        evidence_inventories: dict[str, bytes],
+    ) -> None: ...
+
+
 def _write_durable(path: Path, payload: bytes) -> None:
     with path.open("xb") as stream:
         os.chmod(path, 0o600)
@@ -172,6 +190,25 @@ def _validate_evidence_inventory(payload: bytes) -> tuple[str, ...]:
     for record_path in typed_paths:
         _evidence_record_path(record_path)
     return tuple(typed_paths)
+
+
+def _declared_removed_generations(entries: list[Any]) -> set[str] | None:
+    removed: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("operation") != "context.compact":
+            continue
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            return None
+        values = result.get("removed_generations")
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) for value in values
+        ):
+            return None
+        removed.update(cast(list[str], values))
+    return removed
 
 
 def _evidence_inventory_filename(generation_id: str, payload: bytes) -> str:
@@ -305,6 +342,126 @@ class FileSystemStorageAdapter:
                 raise OSError("explanation record must be a real file")
             return path.read_bytes()
 
+    def apply_retention(self, *, expected_generation: str) -> None:
+        with _exclusive_file_lock(self._package / "LOCK"):
+            current = (self._package / "CURRENT").read_text(encoding="utf-8").strip()
+            if current != expected_generation:
+                raise StaleGenerationError(current)
+            if not self._recover_and_validate_history():
+                raise PackageIntegrityError(
+                    "package history cannot be proven safe for retention"
+                )
+
+    def apply_privacy_scrub(
+        self,
+        *,
+        expected_generation: str,
+        generation_files: dict[str, dict[str, bytes]],
+        journal: bytes,
+        evidence_records: dict[str, bytes],
+        evidence_inventories: dict[str, bytes],
+    ) -> None:
+        with _exclusive_file_lock(self._package / "LOCK"):
+            current = (self._package / "CURRENT").read_text(encoding="utf-8").strip()
+            if current != expected_generation:
+                raise StaleGenerationError(current)
+            if not self._recover_and_validate_history():
+                raise PackageIntegrityError(
+                    "package history cannot be proven safe for privacy scrub"
+                )
+            generations = self._package / "generations"
+            existing = {path.name for path in generations.iterdir()}
+            if set(generation_files) != existing:
+                raise PackageIntegrityError(
+                    "privacy scrub must rewrite every retained generation"
+                )
+            if set(evidence_inventories) != existing:
+                raise PackageIntegrityError(
+                    "privacy scrub must rewrite every evidence inventory"
+                )
+            try:
+                for generation_id, files in generation_files.items():
+                    _validate_generation_payloads(generation_id, files)
+                self._validate_journal_tip(journal, expected_generation)
+                inventory_paths = {
+                    path
+                    for payload in evidence_inventories.values()
+                    for path in _validate_evidence_inventory(payload)
+                }
+                if inventory_paths != set(evidence_records):
+                    raise ValueError(
+                        "privacy scrub evidence inventories do not match records"
+                    )
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                TypeError,
+                ValueError,
+            ) as error:
+                raise PackageIntegrityError(str(error)) from error
+
+            staging = self._package / "staging"
+            temporary = Path(
+                tempfile.mkdtemp(prefix="privacy-scrub-", dir=str(staging))
+            )
+            os.chmod(temporary, 0o700)
+            try:
+                staged_generations = temporary / "generations"
+                staged_generations.mkdir(mode=0o700)
+                for generation_id, files in generation_files.items():
+                    destination = staged_generations / generation_id
+                    destination.mkdir(mode=0o700)
+                    for filename, payload in files.items():
+                        _write_durable(destination / filename, payload)
+                    _sync_directory(destination)
+                staged_inventory = temporary / "evidence-inventory"
+                staged_inventory.mkdir(mode=0o700)
+                for generation_id, payload in evidence_inventories.items():
+                    _write_durable(
+                        staged_inventory
+                        / _evidence_inventory_filename(generation_id, payload),
+                        payload,
+                    )
+                staged_records = temporary / "records"
+                staged_records.mkdir(mode=0o700)
+                for record_path, payload in evidence_records.items():
+                    relative = _evidence_record_path(record_path)
+                    _write_durable(staged_records / relative.name, payload)
+                staged_journal = temporary / "journal.json"
+                _write_durable(staged_journal, journal)
+
+                for generation_id in sorted(generation_files):
+                    destination = generations / generation_id
+                    backup = temporary / f"old-generation-{generation_id}"
+                    os.replace(destination, backup)
+                    os.replace(staged_generations / generation_id, destination)
+                    shutil.rmtree(backup)
+                _sync_directory(generations)
+
+                inventory_directory = self._package / "history" / "evidence-inventory"
+                old_inventory = temporary / "old-evidence-inventory"
+                os.replace(inventory_directory, old_inventory)
+                os.replace(staged_inventory, inventory_directory)
+                shutil.rmtree(old_inventory)
+
+                records_directory = self._package / "evidence" / "records"
+                old_records = temporary / "old-records"
+                os.replace(records_directory, old_records)
+                os.replace(staged_records, records_directory)
+                shutil.rmtree(old_records)
+
+                os.replace(staged_journal, self._package / "history" / "journal.json")
+                derived = self._package / "derived"
+                if derived.exists() or derived.is_symlink():
+                    _remove_artifact(derived)
+                _sync_directory(self._package / "history")
+                _sync_directory(self._package / "evidence")
+                _sync_directory(self._package)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+                _sync_directory(staging)
+
     def commit(
         self, publication: PackageCommit, *, expected_generation: str | None
     ) -> None:
@@ -358,17 +515,28 @@ class FileSystemStorageAdapter:
             if not isinstance(entries, list) or not entries:
                 return None
 
+            removed = _declared_removed_generations(entries)
+            if removed is None:
+                return None
+
             published: set[str] = set()
+            seen: set[str] = set()
             previous: str | None = None
             for entry_value in entries:
                 if not isinstance(entry_value, dict):
                     return None
                 generation_id = entry_value.get("generation_after")
-                if not isinstance(generation_id, str) or generation_id in published:
+                if not isinstance(generation_id, str) or generation_id in seen:
                     return None
                 if entry_value.get("generation_before") != previous:
                     return None
                 generation_path = self._package / "generations" / generation_id
+                seen.add(generation_id)
+                if generation_id in removed:
+                    if generation_id == current:
+                        return None
+                    previous = generation_id
+                    continue
                 generation_files = _read_generation(generation_path)
                 manifest = _validate_generation_payloads(
                     generation_id, generation_files
@@ -380,6 +548,8 @@ class FileSystemStorageAdapter:
                 published.add(generation_id)
                 previous = generation_id
             if previous != current:
+                return None
+            if not removed <= seen:
                 return None
             return published
         except (

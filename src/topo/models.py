@@ -144,8 +144,8 @@ class AssertionRecord(TopoModel):
     knowledge_type: Literal[
         "observed", "user_provided", "inferred", "calculated", "assumed", "projected"
     ]
-    verification_status: Literal["confirmed"]
-    provenance: tuple[Ref, ...] = Field(min_length=1)
+    verification_status: Literal["confirmed", "unverifiable"]
+    provenance: tuple[Ref, ...]
     supersedes: UUID7 | None
     module_data: JsonObject
 
@@ -287,6 +287,10 @@ class JournalEntry(TopoModel):
         "proposal.correct",
         "proposal.reject",
         "rule.activate",
+        "context.migrate",
+        "context.restore",
+        "context.compact",
+        "context.privacy_scrub",
     ]
     actor: Actor
     reason: NonEmptyString
@@ -337,6 +341,37 @@ class MutationRequest(TopoModel):
     expected_generation: UUID7
     actor: Actor
     reason: NonEmptyString
+
+
+class ContextMigrateRequest(MutationRequest):
+    target_package_version: NonEmptyString
+    target_context_schema_version: NonEmptyString
+    target_module_versions: dict[NonEmptyString, NonEmptyString]
+
+
+class ContextRestoreRequest(MutationRequest):
+    restore_generation: UUID7
+
+
+class ContextRetentionRequest(MutationRequest):
+    retain_latest: int = Field(ge=1, le=100)
+    restore_generations: tuple[UUID7, ...] = ()
+
+    @model_validator(mode="after")
+    def unique_restore_generations(self) -> ContextRetentionRequest:
+        if len(self.restore_generations) != len(set(self.restore_generations)):
+            raise ValueError("restore_generations must be unique")
+        return self
+
+
+class ContextPrivacyScrubRequest(MutationRequest):
+    evidence_ids: tuple[UUID7, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def unique_evidence_ids(self) -> ContextPrivacyScrubRequest:
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("evidence_ids must be unique")
+        return self
 
 
 class RulePackageRequest(TopoModel):

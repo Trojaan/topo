@@ -274,6 +274,10 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
     }
     assert commands == {
         "context.init",
+        "context.migrate",
+        "context.restore",
+        "context.compact",
+        "context.privacy_scrub",
         "contract.describe",
         "contract.schema",
         "source.import",

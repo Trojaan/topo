@@ -4,7 +4,9 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import BaseModel, JsonValue
@@ -32,6 +34,10 @@ from topo.models import (
     Authorization,
     CanonicalCollection,
     ContextInitRequest,
+    ContextMigrateRequest,
+    ContextPrivacyScrubRequest,
+    ContextRestoreRequest,
+    ContextRetentionRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     EntityRecord,
@@ -41,6 +47,7 @@ from topo.models import (
     JournalEntry,
     JsonObject,
     Manifest,
+    ModulePin,
     MutationOutcome,
     MutationRequest,
     ObjectValue,
@@ -85,6 +92,8 @@ from topo.scenario import analyze_scenario_comparison
 from topo.storage import (
     ExplanationStorage,
     PackageCommit,
+    PrivacyStorage,
+    RetentionStorage,
     StorageAdapter,
     StoredPackageSnapshot,
 )
@@ -249,6 +258,386 @@ class EngineCore:
     def current_identity(self) -> tuple[str, str]:
         validated = self._load_existing()
         return validated.manifest.generation_id, validated.manifest.context_id
+
+    def migrate_context(self, request: ContextMigrateRequest) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        if (
+            request.target_package_version != "0.1"
+            or request.target_context_schema_version != "topo.context/0.1"
+            or request.target_module_versions
+            != {pin.module_id: pin.module_version for pin in self._module_catalog.pins}
+        ):
+            return MutationOutcome(
+                context_id=request.context_id,
+                generation_before=validated.manifest.generation_id,
+                generation_after=validated.manifest.generation_id,
+                outcome="rejected",
+                result={
+                    "reason": "incompatible_target_version",
+                    "supported_package_versions": ["0.1"],
+                    "supported_context_schema_versions": ["topo.context/0.1"],
+                    "supported_module_versions": {
+                        pin.module_id: pin.module_version
+                        for pin in self._module_catalog.pins
+                    },
+                },
+            )
+        now = self._now()
+        generation_id = self._id_factory()
+        result: JsonObject = {
+            "package_version": request.target_package_version,
+            "context_schema_version": request.target_context_schema_version,
+            "module_versions": {
+                pin.module_id: pin.module_version for pin in self._module_catalog.pins
+            },
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="context.migrate",
+            mutation_id=self._id_factory(),
+            generation_id=generation_id,
+            result=result,
+            now=now,
+            modules=self._module_catalog.pins,
+        )
+        self._commit_update(publication, validated.manifest.generation_id)
+        return self._success(request, generation_id, result)
+
+    def restore_context(self, request: ContextRestoreRequest) -> MutationOutcome:
+        snapshot = self._load_snapshot()
+        validated = load_and_validate_generation(snapshot)
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        target_files: dict[str, bytes] | None
+        if request.restore_generation == snapshot.current_generation:
+            target_files = snapshot.generation_files
+        else:
+            retained = snapshot.retained_generation_files or {}
+            target_files = retained.get(request.restore_generation)
+        if target_files is None:
+            raise ValueError("restore_generation is not retained")
+        target_index = next(
+            (
+                index
+                for index, entry in enumerate(validated.journal.entries)
+                if entry.generation_after == request.restore_generation
+            ),
+            None,
+        )
+        if target_index is None:
+            raise PackageIntegrityError("restore generation has no mutation history")
+        target_journal = validated.journal.model_copy(
+            update={"entries": validated.journal.entries[: target_index + 1]}
+        )
+        target = load_and_validate_generation(
+            StoredPackageSnapshot(
+                current_generation=request.restore_generation,
+                generation_files=target_files,
+                journal=_json_bytes(target_journal),
+                evidence_records=self._generation_evidence_records(
+                    target_files, snapshot.evidence_records
+                ),
+            )
+        )
+        now = self._now()
+        generation_id = self._id_factory()
+        result: JsonObject = {"restored_from_generation": request.restore_generation}
+        publication = self._build_update_publication(
+            target,
+            request=request,
+            operation="context.restore",
+            mutation_id=self._id_factory(),
+            generation_id=generation_id,
+            result=result,
+            now=now,
+            based_on=validated.manifest.generation_id,
+            journal_entries=validated.journal.entries,
+        )
+        self._commit_update(publication, validated.manifest.generation_id)
+        return self._success(request, generation_id, result)
+
+    def apply_retention(self, request: ContextRetentionRequest) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        if not isinstance(self._storage, RetentionStorage):
+            raise TypeError("storage adapter does not support retention")
+        known_generations = tuple(
+            entry.generation_after for entry in validated.journal.entries
+        )
+        unknown = set(request.restore_generations) - set(known_generations)
+        if unknown:
+            raise ValueError("restore_generations contains an unknown generation")
+        generation_id = self._id_factory()
+        ordered_with_new = (*known_generations, generation_id)
+        keep = {
+            *ordered_with_new[-request.retain_latest :],
+            *request.restore_generations,
+        }
+        removed = tuple(
+            generation for generation in known_generations if generation not in keep
+        )
+        result: JsonObject = {
+            "retain_latest": request.retain_latest,
+            "restore_generations": list(request.restore_generations),
+            "removed_generations": list(removed),
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="context.compact",
+            mutation_id=self._id_factory(),
+            generation_id=generation_id,
+            result=result,
+            now=self._now(),
+        )
+        self._commit_update(publication, validated.manifest.generation_id)
+        self._storage.apply_retention(expected_generation=generation_id)
+        return self._success(request, generation_id, result)
+
+    def scrub_privacy(self, request: ContextPrivacyScrubRequest) -> MutationOutcome:
+        snapshot = self._load_snapshot()
+        validated = load_and_validate_generation(snapshot)
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        if not isinstance(self._storage, PrivacyStorage):
+            raise TypeError("storage adapter does not support privacy scrub")
+        requested_ids = set(request.evidence_ids)
+        all_generation_files = {
+            snapshot.current_generation: snapshot.generation_files,
+            **(snapshot.retained_generation_files or {}),
+        }
+        present_ids = {
+            str(record["id"])
+            for files in all_generation_files.values()
+            for record in cast(
+                list[JsonObject],
+                cast(
+                    JsonObject,
+                    json.loads(files["evidence.json"].decode("utf-8")),
+                )["records"],
+            )
+        }
+        if not requested_ids & present_ids:
+            return MutationOutcome(
+                context_id=request.context_id,
+                generation_before=validated.manifest.generation_id,
+                generation_after=validated.manifest.generation_id,
+                outcome="no_change",
+                result={"scrubbed_evidence_count": 0},
+            )
+
+        scrubbed_current = self._privacy_scrubbed_package(validated, requested_ids)
+        generation_id = self._id_factory()
+        result: JsonObject = {
+            "scrubbed_evidence_count": len(requested_ids & present_ids),
+            "remaining_assertions_marked_unverifiable": sum(
+                assertion.verification_status == "unverifiable"
+                for assertion in scrubbed_current.assertions.records
+            ),
+        }
+        publication = self._build_update_publication(
+            scrubbed_current,
+            request=request,
+            operation="context.privacy_scrub",
+            mutation_id=self._id_factory(),
+            generation_id=generation_id,
+            result=result,
+            now=self._now(),
+            based_on=validated.manifest.generation_id,
+            journal_entries=validated.journal.entries,
+        )
+        self._commit_update(publication, validated.manifest.generation_id)
+
+        scrub_snapshot = self._load_snapshot()
+        scrub_current = load_and_validate_generation(scrub_snapshot)
+        rewritten_generations: dict[str, dict[str, bytes]] = {}
+        inventories: dict[str, bytes] = {}
+        all_files_after = {
+            scrub_snapshot.current_generation: scrub_snapshot.generation_files,
+            **(scrub_snapshot.retained_generation_files or {}),
+        }
+        for retained_id, files in all_files_after.items():
+            entry_index = next(
+                index
+                for index, entry in enumerate(scrub_current.journal.entries)
+                if entry.generation_after == retained_id
+            )
+            retained_journal = scrub_current.journal.model_copy(
+                update={"entries": scrub_current.journal.entries[: entry_index + 1]}
+            )
+            retained = load_and_validate_generation(
+                StoredPackageSnapshot(
+                    current_generation=retained_id,
+                    generation_files=files,
+                    journal=_json_bytes(retained_journal),
+                    evidence_records=self._generation_evidence_records(
+                        files, scrub_snapshot.evidence_records
+                    ),
+                )
+            )
+            scrubbed = self._privacy_scrubbed_package(retained, requested_ids)
+            rewritten_generations[retained_id] = self._generation_files(scrubbed)
+            inventories[retained_id] = _evidence_inventory_bytes(
+                tuple(scrubbed.source_records)
+            )
+
+        journal_value = self._scrub_json(
+            model_to_json_object(scrub_current.journal), requested_ids
+        )
+        scrubbed_journal = Journal.model_validate_json(
+            json.dumps(journal_value), strict=True
+        )
+        remaining_records = {
+            path: payload
+            for path, payload in scrub_snapshot.evidence_records.items()
+            if Path(path).stem not in requested_ids
+        }
+        self._storage.apply_privacy_scrub(
+            expected_generation=generation_id,
+            generation_files=rewritten_generations,
+            journal=_json_bytes(scrubbed_journal),
+            evidence_records=remaining_records,
+            evidence_inventories=inventories,
+        )
+        self._load_existing()
+        return self._success(request, generation_id, result)
+
+    @staticmethod
+    def _scrub_json(value: JsonValue, targets: set[str]) -> JsonValue:
+        if isinstance(value, str):
+            result = value
+            for target in targets:
+                result = result.replace(target, "[privacy-scrubbed]")
+            return result
+        if isinstance(value, list):
+            return [EngineCore._scrub_json(item, targets) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: EngineCore._scrub_json(item, targets)
+                for key, item in value.items()
+            }
+        return value
+
+    @staticmethod
+    def _privacy_scrubbed_package(
+        validated: ValidatedPackage, requested_ids: set[str]
+    ) -> ValidatedPackage:
+        removed_evidence = set(requested_ids)
+        changed = True
+        while changed:
+            changed = False
+            for record in validated.evidence.records:
+                if (
+                    isinstance(record, SourceRecordEvidenceRecord)
+                    and record.supersedes in removed_evidence
+                    and record.id not in removed_evidence
+                ):
+                    removed_evidence.add(record.id)
+                    changed = True
+        proposals = tuple(
+            proposal
+            for proposal in validated.proposals.records
+            if not any(ref.id in removed_evidence for ref in proposal.evidence_refs)
+        )
+        removed_proposals = {
+            proposal.id
+            for proposal in validated.proposals.records
+            if proposal not in proposals
+        }
+        assertions: list[AssertionRecord] = []
+        for assertion in validated.assertions.records:
+            provenance = tuple(
+                ref
+                for ref in assertion.provenance
+                if not (
+                    (ref.ref_type == "evidence" and ref.id in removed_evidence)
+                    or (ref.ref_type == "proposal" and ref.id in removed_proposals)
+                )
+            )
+            assertions.append(
+                assertion
+                if provenance == assertion.provenance
+                else assertion.model_copy(
+                    update={
+                        "provenance": provenance,
+                        "verification_status": "unverifiable",
+                    }
+                )
+            )
+        evidence = tuple(
+            record
+            for record in validated.evidence.records
+            if record.id not in removed_evidence
+        )
+        source_records = {
+            path: payload
+            for path, payload in validated.source_records.items()
+            if Path(path).stem not in removed_evidence
+        }
+        return replace(
+            validated,
+            assertions=CanonicalCollection[AssertionRecord](
+                schema_version="topo.context/0.1", records=tuple(assertions)
+            ),
+            evidence=CanonicalCollection[EvidenceRecord](
+                schema_version="topo.context/0.1", records=evidence
+            ),
+            proposals=CanonicalCollection[ProposalRecord](
+                schema_version="topo.context/0.1", records=proposals
+            ),
+            source_records=source_records,
+        )
+
+    @staticmethod
+    def _generation_files(validated: ValidatedPackage) -> dict[str, bytes]:
+        collections = {
+            "entities.json": _json_bytes(validated.entities),
+            "assertions.json": _json_bytes(validated.assertions),
+            "evidence.json": _json_bytes(validated.evidence),
+            "proposals.json": _json_bytes(validated.proposals),
+        }
+        payloads = {**collections, **validated.rule_package_files}
+        checksums = {
+            filename: "sha256:" + hashlib.sha256(payload).hexdigest()
+            for filename, payload in payloads.items()
+        }
+        manifest = validated.manifest.model_copy(update={"files": checksums})
+        return {**payloads, "manifest.json": _json_bytes(manifest)}
+
+    @staticmethod
+    def _generation_evidence_records(
+        generation_files: dict[str, bytes], available: dict[str, bytes]
+    ) -> dict[str, bytes]:
+        evidence = cast(
+            JsonObject,
+            json.loads(generation_files["evidence.json"].decode("utf-8")),
+        )
+        paths = {
+            str(record["record_path"])
+            for record in cast(list[JsonObject], evidence["records"])
+            if record.get("evidence_type") == "source_record"
+        }
+        return {path: available[path] for path in paths if path in available}
 
     def validate_rules(self, request: RulePackageRequest) -> JsonObject:
         validated = self._load_existing()
@@ -906,13 +1295,16 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def _load_existing(self) -> ValidatedPackage:
+        return load_and_validate_generation(self._load_snapshot())
+
+    def _load_snapshot(self) -> StoredPackageSnapshot:
         try:
             snapshot = self._storage.load()
         except OSError as error:
             raise PackageIntegrityError(str(error)) from error
         if snapshot is None:
             raise PackageIntegrityError("context package does not exist")
-        return load_and_validate_generation(snapshot)
+        return snapshot
 
     @staticmethod
     def _replay(journal: Journal, operation_id: str) -> JournalEntry | None:
@@ -1175,6 +1567,10 @@ class EngineCore:
             "proposal.correct",
             "proposal.reject",
             "rule.activate",
+            "context.migrate",
+            "context.restore",
+            "context.compact",
+            "context.privacy_scrub",
         ],
         mutation_id: str,
         generation_id: str,
@@ -1187,6 +1583,9 @@ class EngineCore:
         source_records: dict[str, bytes] | None = None,
         active_rule_packages: tuple[RulePackagePin, ...] | None = None,
         rule_package_files: dict[str, bytes] | None = None,
+        modules: tuple[ModulePin, ...] | None = None,
+        based_on: str | None = None,
+        journal_entries: tuple[JournalEntry, ...] | None = None,
     ) -> PackageCommit:
         inventory_payload = _evidence_inventory_bytes(
             tuple({*validated.source_records, *(source_records or {})})
@@ -1250,6 +1649,7 @@ class EngineCore:
                 "based_on": validated.manifest.generation_id,
                 "mutation_id": mutation_id,
                 "recorded_at": now,
+                "modules": (validated.manifest.modules if modules is None else modules),
                 "active_rule_packages": (
                     validated.manifest.active_rule_packages
                     if active_rule_packages is None
@@ -1258,17 +1658,27 @@ class EngineCore:
                 "files": checksums,
             }
         )
+        if based_on is not None:
+            manifest = manifest.model_copy(update={"based_on": based_on})
         journal = Journal(
             schema_version="topo.journal/0.1",
             entries=(
-                *validated.journal.entries,
+                *(
+                    validated.journal.entries
+                    if journal_entries is None
+                    else journal_entries
+                ),
                 JournalEntry(
                     operation_id=request.operation_id,
                     mutation_id=mutation_id,
                     operation=operation,
                     actor=request.actor,
                     reason=request.reason,
-                    generation_before=validated.manifest.generation_id,
+                    generation_before=(
+                        validated.manifest.generation_id
+                        if based_on is None
+                        else based_on
+                    ),
                     generation_after=generation_id,
                     recorded_at=now,
                     result=result,

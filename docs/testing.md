@@ -40,6 +40,11 @@ The rule-package journey proves safe-YAML and capability validation, effect-free
 preview traces, explicit human authorization, atomic full-package activation,
 checksum-bound manifest pins, and stale-manifest conflict handling.
 
+The context-lifecycle journey proves compatible migration, new-generation restore,
+bounded retention with an explicit restore point, and package-wide privacy scrub
+through the public CLI. Unit integration tests additionally prove incompatible
+migration has no effect and scrubbed assertions are marked unverifiable.
+
 When an e2e test fails, classify it as a product defect, an intentionally changed
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.

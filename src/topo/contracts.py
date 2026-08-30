@@ -21,6 +21,10 @@ COMMANDS = (
     "context.init",
     "contract.describe",
     "contract.schema",
+    "context.migrate",
+    "context.restore",
+    "context.compact",
+    "context.privacy_scrub",
     "source.import",
     "discover.run",
     "proposal.submit",
@@ -39,6 +43,10 @@ SCHEMA_COMMANDS = (
     "workflow.next",
 )
 MUTATING_COMMANDS = {
+    "context.migrate",
+    "context.restore",
+    "context.compact",
+    "context.privacy_scrub",
     "source.import",
     "proposal.submit",
     "proposal.confirm",
@@ -268,6 +276,52 @@ def _mutation_input(command: str) -> SchemaObject:
             }
         )
         required.extend(["rule_package_yaml", "authorization"])
+    if command == "context.migrate":
+        properties.update(
+            {
+                "target_package_version": {"type": "string", "minLength": 1},
+                "target_context_schema_version": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+                "target_module_versions": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": {"type": "string", "minLength": 1},
+                    "additionalProperties": {"type": "string", "minLength": 1},
+                },
+            }
+        )
+        required.extend(
+            [
+                "target_package_version",
+                "target_context_schema_version",
+                "target_module_versions",
+            ]
+        )
+    if command == "context.restore":
+        properties["restore_generation"] = _uuid7()
+        required.append("restore_generation")
+    if command == "context.compact":
+        properties.update(
+            {
+                "retain_latest": {"type": "integer", "minimum": 1, "maximum": 100},
+                "restore_generations": {
+                    "type": "array",
+                    "uniqueItems": True,
+                    "items": _uuid7(),
+                },
+            }
+        )
+        required.extend(["retain_latest", "restore_generations"])
+    if command == "context.privacy_scrub":
+        properties["evidence_ids"] = {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
+            "items": _uuid7(),
+        }
+        required.append("evidence_ids")
     if command == "proposal.submit":
         properties["proposal"] = _closed_object(
             {
@@ -525,6 +579,43 @@ def _result_schema(command: str) -> SchemaObject:
             "required": list(names),
             "properties": {name: deepcopy(uuid7) for name in names},
         }
+    if command == "context.migrate":
+        return _closed_object(
+            {
+                "package_version": {"type": "string"},
+                "context_schema_version": {"type": "string"},
+                "module_versions": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+            },
+            ("package_version", "context_schema_version", "module_versions"),
+        )
+    if command == "context.restore":
+        return _closed_object(
+            {"restored_from_generation": _uuid7()},
+            ("restored_from_generation",),
+        )
+    if command == "context.compact":
+        return _closed_object(
+            {
+                "retain_latest": {"type": "integer", "minimum": 1, "maximum": 100},
+                "restore_generations": {"type": "array", "items": _uuid7()},
+                "removed_generations": {"type": "array", "items": _uuid7()},
+            },
+            ("retain_latest", "restore_generations", "removed_generations"),
+        )
+    if command == "context.privacy_scrub":
+        return _closed_object(
+            {
+                "scrubbed_evidence_count": {"type": "integer", "minimum": 0},
+                "remaining_assertions_marked_unverifiable": {
+                    "type": "integer",
+                    "minimum": 0,
+                },
+            },
+            ("scrubbed_evidence_count",),
+        )
     if command == "contract.describe":
         return {
             "type": "object",

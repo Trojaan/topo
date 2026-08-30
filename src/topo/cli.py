@@ -33,6 +33,10 @@ from topo.identifiers import uuid7
 from topo.models import (
     AnalyzeRunRequest,
     ContextInitRequest,
+    ContextMigrateRequest,
+    ContextPrivacyScrubRequest,
+    ContextRestoreRequest,
+    ContextRetentionRequest,
     Diagnostic,
     DiscoveryRequest,
     JsonObject,
@@ -270,6 +274,9 @@ def _parser() -> argparse.ArgumentParser:
     context_commands = context.add_subparsers(dest="context_command", required=True)
     initialize = context_commands.add_parser("init")
     initialize.add_argument("--package", type=Path, required=True)
+    for name in ("migrate", "restore", "compact", "privacy-scrub"):
+        lifecycle = context_commands.add_parser(name)
+        lifecycle.add_argument("--package", type=Path, required=True)
 
     proposal = commands.add_parser("proposal")
     proposal_commands = proposal.add_subparsers(dest="proposal_command", required=True)
@@ -453,7 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.group == "contract":
         command = f"contract.{args.contract_command}"
     elif args.group == "context":
-        command = f"context.{args.context_command}"
+        command = f"context.{args.context_command.replace('-', '_')}"
     elif args.group == "source":
         command = f"source.{args.source_command}"
     elif args.group == "discover":
@@ -505,6 +512,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     outcome="no_change" if initialization.replayed else "succeeded",
                 )
             )
+            return 0
+        if command.startswith("context."):
+            engine = EngineCore(FileSystemStorageAdapter(args.package))
+            if command == "context.migrate":
+                outcome = engine.migrate_context(
+                    ContextMigrateRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            elif command == "context.restore":
+                outcome = engine.restore_context(
+                    ContextRestoreRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            elif command == "context.compact":
+                outcome = engine.apply_retention(
+                    ContextRetentionRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            else:
+                outcome = engine.scrub_privacy(
+                    ContextPrivacyScrubRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            _write_json(_mutation_envelope(command, request, outcome))
             return 0
         if command == "source.import":
             outcome = EngineCore(FileSystemStorageAdapter(args.package)).import_source(
