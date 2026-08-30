@@ -39,7 +39,8 @@ jobs:
       - name: Verify tag matches package version
         shell: bash
         run: |
-          expected="v$(python -c \"import runpy; print(runpy.run_path('src/topo/__about__.py')['__version__'])\")"
+          package_version="$(sed -nE 's/^__version__ = "([^"]+)"$/\1/p' src/topo/__about__.py)"
+          expected="v${package_version}"
           test "$GITHUB_REF_NAME" = "$expected" || {
             echo "Tag $GITHUB_REF_NAME does not match package version $expected" >&2
             exit 1
