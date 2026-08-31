@@ -321,6 +321,12 @@ def _parser() -> argparse.ArgumentParser:
     workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
     workflow_next = workflow_commands.add_parser("next")
     workflow_next.add_argument("--package", type=Path, required=True)
+    workflow_next.add_argument(
+        "--request",
+        type=Path,
+        metavar="PATH",
+        help="read the workflow.next JSON request from PATH (defaults to stdin)",
+    )
     rule = commands.add_parser("rule")
     rule_commands = rule.add_subparsers(dest="rule_command", required=True)
     for name in ("validate", "preview", "activate"):

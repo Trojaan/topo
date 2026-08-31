@@ -143,6 +143,53 @@ def test_unknown_major_contract_version_fails_without_creating_context(
     assert not package.exists()
 
 
+def test_workflow_next_exposes_and_accepts_a_json_request_file(
+    tmp_path: Path,
+) -> None:
+    help_result = run_topo("workflow", "next", "--help")
+
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--request PATH" in help_result.stdout
+
+    package = tmp_path / "workflow.topo"
+    initialized = run_topo("context", "init", "--package", str(package), "--json")
+    assert initialized.returncode == 0, initialized.stderr
+    context = parse_json(initialized)
+    request_path = tmp_path / "workflow-next.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "topo.cli/0.1",
+                "context_id": context["result"]["context_id"],
+                "analysis_id": "analysis.net_worth",
+                "analysis_scope": {
+                    "scope_type": "household",
+                    "entity_id": context["result"]["household_id"],
+                },
+                "as_of_date": "2026-08-31",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    workflow = run_topo(
+        "workflow",
+        "next",
+        "--package",
+        str(package),
+        "--request",
+        str(request_path),
+        "--json",
+    )
+
+    assert workflow.returncode == 0, workflow.stderr
+    body = parse_json(workflow)
+    assert body["outcome"] == "succeeded"
+    assert body["trace"]["normalized_request"] == json.loads(
+        request_path.read_text(encoding="utf-8")
+    )
+
+
 def test_checksum_tampering_blocks_publication_without_switching_generation(
     tmp_path: Path,
 ) -> None:

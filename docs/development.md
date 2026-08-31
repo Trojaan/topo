@@ -122,6 +122,18 @@ date-matching `topo.core/exchange_rate` assertion refs in `reporting_currency`.
 Without such a rate, original-currency subtotals remain usable and the converted
 total is unavailable.
 
+Ask for the next net-worth workflow action with an explicit `workflow.next`
+request. The request file contains the package's `context_id`, the selected
+`analysis_scope`, and an explicit `as_of_date`; `analysis_id` is currently
+`analysis.net_worth`:
+
+```bash
+uv run topo workflow next --package /tmp/example.topo --request /tmp/workflow-next.json --json
+```
+
+The same JSON may be supplied through stdin. `--package` selects storage; it does
+not silently choose the analysis scope or valuation date.
+
 For an effect-free scenario comparison, use `analysis.scenario_comparison`, a
 future `as_of_date`, one reporting currency, and a non-empty `scenario` with a
 stable `scenario_id`. The only accepted assumption types are
