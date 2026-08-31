@@ -21,7 +21,7 @@ irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex
 De installer downloadt de nieuwste standalone release. Python en `uv` zijn niet
 nodig om de geïnstalleerde CLI te gebruiken. Voer dezelfde installer opnieuw uit
 om Topo bij te werken. Een specifieke versie installeren kan met
-`TOPO_VERSION=v0.1.0` op Unix of `-Version v0.1.0` in PowerShell.
+`TOPO_VERSION=v0.1.1` op Unix of `-Version v0.1.1` in PowerShell.
 
 ## Agent-ready quickstart
 
