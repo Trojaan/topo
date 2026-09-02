@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from jsonschema import Draft202012Validator
 
 
 def run_topo(
@@ -131,6 +132,271 @@ def import_with_authorization(
     )
     assert imported_process.returncode == 0, imported_process.stderr
     return parse_json(imported_process), authorized_request
+
+
+def workflow_next_request(
+    initialized: dict[str, Any], *, as_of_date: str
+) -> dict[str, Any]:
+    return {
+        "contract_version": "topo.cli/0.1",
+        "context_id": initialized["context_id"],
+        "analysis_id": "analysis.net_worth",
+        "analysis_scope": {
+            "scope_type": "household",
+            "entity_id": initialized["result"]["household_id"],
+        },
+        "as_of_date": as_of_date,
+    }
+
+
+def test_workflow_collects_two_account_balances_as_one_evidenced_batch(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "account-balances.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    import_with_authorization(
+        package,
+        source_import_request(
+            initialized,
+            operation_id="0198f1a0-0000-7000-8000-000000000090",
+            adapter_id="adapter.tally",
+            adapter_version="0.1.0",
+            reason="Import two synthetic accounts",
+            records=[
+                {
+                    "source_id": "main-account",
+                    "record_id": "main-proof",
+                    "booking_date": "2026-08-31",
+                    "money": {"amount": "1.00", "currency": "EUR"},
+                    "description": "Synthetic main account record",
+                },
+                {
+                    "source_id": "holiday-account",
+                    "record_id": "holiday-proof",
+                    "booking_date": "2026-08-31",
+                    "money": {"amount": "2.00", "currency": "EUR"},
+                    "description": "Synthetic holiday account record",
+                },
+            ],
+        ),
+    )
+    workflow_request = workflow_next_request(
+        initialized,
+        as_of_date="2026-08-31",
+    )
+    workflow = parse_json(
+        run_topo(
+            "workflow",
+            "next",
+            "--package",
+            str(package),
+            "--json",
+            request=workflow_request,
+        )
+    )
+    action = workflow["result"]["actions"][0]
+
+    assert action["action_contract_version"] == "topo.workflow-action/0.2"
+    assert action["question"]
+    assert action["input_schema_ref"].endswith("/0.2")
+    accounts = action["available_context"]["accounts"]
+    assert {account["source"]["source_id"] for account in accounts} == {
+        "main-account",
+        "holiday-account",
+    }
+    assert len(action["user_input_paths"]) == 4
+    assert set(action["agent_input_paths"]) == {
+        "/actor/actor_id",
+        "/workflow_response/producer/producer_id",
+        "/workflow_response/producer/producer_version",
+    }
+    Draft202012Validator.check_schema(action["user_input_schema"])
+    assert "account_ref" not in json.dumps(action["user_input_schema"])
+
+    request = json.loads(json.dumps(action["request_template"]))
+    request["actor"]["actor_id"] = "codex-test-agent"
+    request["workflow_response"]["producer"].update(
+        {
+            "producer_id": "codex-test-agent",
+            "producer_version": "test/0.1",
+        }
+    )
+    expected_money = {
+        "main-account": {"amount": "1250.25", "currency": "EUR"},
+        "holiday-account": {"amount": "800.00", "currency": "EUR"},
+    }
+    Draft202012Validator(action["user_input_schema"]).validate(
+        {
+            "balances": [
+                {
+                    "source": account["source"],
+                    "money": expected_money[account["source"]["source_id"]],
+                }
+                for account in accounts
+            ]
+        }
+    )
+    for balance in request["workflow_response"]["balances"]:
+        balance["money"] = expected_money[balance["source"]["source_id"]]
+
+    mismatched = json.loads(json.dumps(request))
+    mismatched["workflow_response"]["balances"][0]["source"]["source_id"] = (
+        "wrong-account"
+    )
+    current_before = (package / "CURRENT").read_bytes()
+    rejected = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=mismatched,
+        )
+    )
+    assert rejected["outcome"] == "rejected"
+    assert rejected["diagnostics"][0]["code"] == "WORKFLOW_ACCOUNT_SOURCE_MISMATCH"
+    assert (package / "CURRENT").read_bytes() == current_before
+
+    incomplete = json.loads(json.dumps(request))
+    incomplete["workflow_response"]["balances"].pop()
+    rejected = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=incomplete,
+        )
+    )
+    assert rejected["outcome"] == "rejected"
+    assert rejected["diagnostics"][0]["code"] == "WORKFLOW_ACCOUNT_BALANCES_INCOMPLETE"
+    assert (package / "CURRENT").read_bytes() == current_before
+
+    duplicate = json.loads(json.dumps(request))
+    duplicate["workflow_response"]["balances"][1] = duplicate["workflow_response"][
+        "balances"
+    ][0]
+    rejected = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=duplicate,
+        )
+    )
+    assert rejected["outcome"] == "rejected"
+    assert rejected["diagnostics"][0]["code"] == "INVALID_REQUEST"
+    assert (package / "CURRENT").read_bytes() == current_before
+
+    submitted = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=request,
+        )
+    )
+    assert submitted["outcome"] == "succeeded"
+    assert len(submitted["result"]["proposal_ids"]) == 2
+    evidence_id = submitted["result"]["evidence_id"]
+    _, generation = current_generation(package)
+    evidence = json.loads((generation / "evidence.json").read_text())
+    proposals = json.loads((generation / "proposals.json").read_text())
+    answer_evidence = next(
+        item for item in evidence["records"] if item["id"] == evidence_id
+    )
+    assert answer_evidence["evidence_type"] == "user_statement"
+    assert answer_evidence["statement_type"] == "workflow_answer"
+    assert {
+        item["source"]["source_id"]: item["money"]
+        for item in answer_evidence["statement"]["balances"]
+    } == expected_money
+    created = [
+        item
+        for item in proposals["records"]
+        if item["id"] in submitted["result"]["proposal_ids"]
+    ]
+    assert len(created) == 2
+    assert all(item["status"] == "open" for item in created)
+    assert all(
+        item["evidence_refs"] == [{"ref_type": "evidence", "id": evidence_id}]
+        for item in created
+    )
+    assert {
+        item["proposed_assertion"]["object_value"]["value"]["amount"]
+        for item in created
+    } == {"1250.25", "800.00"}
+    assert all(
+        item["proposed_assertion"]["predicate"] == "domain.accounts/balance"
+        and item["proposed_assertion"]["knowledge_type"] == "user_provided"
+        and item["proposed_assertion"]["module_data"]["valuation_basis"]
+        == "account_balance"
+        for item in created
+    )
+    source_evidence_ids = {
+        item["id"]
+        for item in evidence["records"]
+        if item["evidence_type"] == "source_record"
+    }
+    assert all(
+        not source_evidence_ids & {ref["id"] for ref in item["evidence_refs"]}
+        for item in created
+    )
+    current_after_submit = (package / "CURRENT").read_bytes()
+
+    replay = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=request,
+        )
+    )
+    assert replay["outcome"] == "no_change"
+    assert replay["result"] == submitted["result"]
+    assert (package / "CURRENT").read_bytes() == current_after_submit
+
+    stale = json.loads(json.dumps(request))
+    stale_action_id = "0198f1a0-0000-7000-8000-000000000099"
+    stale["operation_id"] = stale_action_id
+    stale["workflow_response"]["action_id"] = stale_action_id
+    stale_response = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=stale,
+        )
+    )
+    assert stale_response["outcome"] == "conflict"
+    assert stale_response["diagnostics"][0]["code"] == "STALE_GENERATION"
+
+    unknown = json.loads(json.dumps(stale))
+    unknown["expected_generation"] = submitted["generation_after"]
+    unknown_response = parse_json(
+        run_topo(
+            "proposal",
+            "submit",
+            "--package",
+            str(package),
+            "--json",
+            request=unknown,
+        )
+    )
+    assert unknown_response["outcome"] == "rejected"
+    assert unknown_response["diagnostics"][0]["code"] == "WORKFLOW_ACTION_NOT_CURRENT"
 
 
 def test_source_adapter_imports_literal_transaction_and_replay_has_no_effect(

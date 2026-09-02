@@ -29,7 +29,10 @@ or package conflicts.
 
 The source journey also proves recurring discovery leaves `CURRENT` and proposals
 unchanged, reports insufficient history, and produces a candidate that can be
-selected through the ordinary proposal workflow.
+selected through the ordinary proposal workflow. It also proves two known source
+accounts can be answered as one workflow batch, with one new user-statement
+evidence record, one open proposal per account, atomic rejection, replay, and no
+transaction evidence reused as balance evidence.
 
 The realized-cashflow journey proves half-open month selection, explicit account
 allocation and coverage, paired-transfer exclusion, unclassified net movement,

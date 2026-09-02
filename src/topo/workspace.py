@@ -31,8 +31,19 @@ This directory contains a local, auditable financial context in `context.topo/`.
   `topo contract schema <command> --json` before composing requests.
 - Treat agent-interpreted meaning as a proposal. Only explicit human
   authorization may promote it to a confirmed fact.
-- Use `topo workflow next --package ./context.topo --json` for deterministic
-  next-action guidance once its required request fields are known.
+- Use `topo workflow next` with `--package ./context.topo`,
+  `--request <request.json>`, and `--json` for deterministic next-action guidance.
+- Ask the user for meaningful missing information they can reasonably provide;
+  use only the workflow action's question and `user_input_schema` for that request.
+- Fill technical fields from the action's `request_template` and
+  `agent_input_paths`. Do not inspect Topo's implementation to reconstruct missing
+  contract context, invent references, or use unrelated transactions as evidence.
+- If an action has no valid evidence or execution route, report the contract gap
+  explicitly instead of guessing.
+- Check the installed version with `topo --version`. To update Topo, rerun the
+  official installer for the current platform:
+  - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh | bash`
+  - Windows PowerShell: `irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex`
 - Keep financial source files in `imports/`; both it and `context.topo/` are
   intentionally excluded from Git.
 {TOPO_END}"""

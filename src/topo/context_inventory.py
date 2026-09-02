@@ -8,11 +8,13 @@ from datetime import date
 from typing import cast
 
 from topo.canonical_validation import ValidatedPackage
+from topo.identifiers import source_account_id
 from topo.models import (
     AssertionRecord,
     ContextInventoryAnalyzeRunRequest,
     JsonObject,
     ProposalRecord,
+    SourceRecordEvidenceRecord,
     WorkflowNextRequest,
 )
 
@@ -55,6 +57,169 @@ def _stable_uuid7(*parts: str) -> str:
     digest[6] = (digest[6] & 0x0F) | 0x70
     digest[8] = (digest[8] & 0x3F) | 0x80
     return str(uuid.UUID(bytes=bytes(digest)))
+
+
+def _known_source_accounts(package: ValidatedPackage) -> list[JsonObject]:
+    account_ids = {
+        entity.id
+        for entity in package.entities.records
+        if entity.entity_type == "account"
+    }
+    accounts: dict[str, JsonObject] = {}
+    for evidence in package.evidence.records:
+        if not isinstance(evidence, SourceRecordEvidenceRecord):
+            continue
+        account_id = source_account_id(
+            evidence.source.adapter_id, evidence.source.source_id
+        )
+        if account_id not in account_ids:
+            continue
+        accounts[account_id] = {
+            "account_ref": {"ref_type": "entity", "id": account_id},
+            "source": {
+                "adapter_id": evidence.source.adapter_id,
+                "source_id": evidence.source.source_id,
+            },
+        }
+    return [accounts[account_id] for account_id in sorted(accounts)]
+
+
+def _account_balance_action(
+    package: ValidatedPackage,
+    request: WorkflowNextRequest,
+    decision: _NextRequirementDecision,
+    *,
+    component_id: str,
+    accounts: list[JsonObject],
+) -> JsonObject:
+    action_id = _stable_uuid7(
+        package.manifest.generation_id,
+        request.analysis_id,
+        request.analysis_scope.entity_id,
+        request.as_of_date.isoformat(),
+        decision.reason_code,
+    )
+    balance_templates = [
+        {
+            **account,
+            "money": {"amount": None, "currency": None},
+        }
+        for account in accounts
+    ]
+    user_input_paths = [
+        path
+        for index in range(len(accounts))
+        for path in (
+            f"/workflow_response/balances/{index}/money/amount",
+            f"/workflow_response/balances/{index}/money/currency",
+        )
+    ]
+    money_input_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["amount", "currency"],
+        "properties": {
+            "amount": {
+                "type": "string",
+                "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
+            },
+            "currency": {"type": "string", "pattern": r"^[A-Z]{3}$"},
+        },
+    }
+    user_balance_schemas = [
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["source", "money"],
+            "properties": {
+                "source": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["adapter_id", "source_id"],
+                    "properties": {
+                        "adapter_id": {
+                            "const": cast(JsonObject, account["source"])["adapter_id"]
+                        },
+                        "source_id": {
+                            "const": cast(JsonObject, account["source"])["source_id"]
+                        },
+                    },
+                },
+                "money": money_input_schema,
+            },
+        }
+        for account in accounts
+    ]
+    request_template = cast(
+        JsonObject,
+        {
+            "contract_version": request.contract_version,
+            "operation_id": action_id,
+            "context_id": request.context_id,
+            "expected_generation": package.manifest.generation_id,
+            "actor": {"actor_type": "agent", "actor_id": None},
+            "reason": f"Answer workflow action {action_id}",
+            "workflow_response": {
+                "action_id": action_id,
+                "response_type": "account_balances",
+                "analysis_id": request.analysis_id,
+                "analysis_scope": request.analysis_scope.model_dump(mode="json"),
+                "as_of_date": request.as_of_date.isoformat(),
+                "producer": {
+                    "producer_type": "agent",
+                    "producer_id": None,
+                    "producer_version": None,
+                },
+                "balances": balance_templates,
+            },
+        },
+    )
+    return cast(
+        JsonObject,
+        {
+            "action_id": action_id,
+            "action_type": "answer_question",
+            "action_contract_version": "topo.workflow-action/0.2",
+            "priority": decision.priority,
+            "reason_code": decision.reason_code,
+            "affected_component": component_id,
+            "related_refs": [account["account_ref"] for account in accounts],
+            "command": "proposal.submit",
+            "question": decision.question,
+            "available_context": {"accounts": accounts},
+            "request_template": request_template,
+            "user_input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["balances"],
+                "properties": {
+                    "balances": {
+                        "type": "array",
+                        "minItems": len(accounts),
+                        "maxItems": len(accounts),
+                        "items": {"oneOf": user_balance_schemas},
+                        "allOf": [
+                            {
+                                "contains": account_schema,
+                                "minContains": 1,
+                                "maxContains": 1,
+                            }
+                            for account_schema in user_balance_schemas
+                        ],
+                    }
+                },
+            },
+            "user_input_paths": user_input_paths,
+            "agent_input_paths": [
+                "/actor/actor_id",
+                "/workflow_response/producer/producer_id",
+                "/workflow_response/producer/producer_version",
+            ],
+            "input_schema_ref": "topo://schema/proposal-submit-request/0.2",
+            "requires_user_input": True,
+            "requires_authorization": False,
+        },
+    )
 
 
 def _component_result(
@@ -550,6 +715,23 @@ def next_workflow_action(
         return {"actions": []}
 
     component_id = "analysis.net_worth/total"
+    accounts = _known_source_accounts(package)
+    if (
+        decision.requirement == "account_balances"
+        and decision.state == "missing"
+        and accounts
+    ):
+        return {
+            "actions": [
+                _account_balance_action(
+                    package,
+                    request,
+                    decision,
+                    component_id=component_id,
+                    accounts=accounts,
+                )
+            ]
+        }
     return cast(
         JsonObject,
         {

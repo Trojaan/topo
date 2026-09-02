@@ -176,6 +176,7 @@ def _evidence_schema() -> JsonObject:
                     "context_initialization",
                     "proposal_confirmation",
                     "proposal_correction",
+                    "workflow_answer",
                 ]
             },
             "statement": {"oneOf": [{"type": "object"}, {"type": "null"}]},
@@ -294,7 +295,7 @@ def _proposal_schema() -> JsonObject:
                             },
                         },
                     },
-                    "knowledge_type": {"const": "inferred"},
+                    "knowledge_type": {"enum": ["inferred", "user_provided"]},
                     "module_data": {"type": "object"},
                 },
                 "oneOf": [

@@ -161,7 +161,10 @@ class UserStatementEvidenceRecord(TopoModel):
     evidence_type: Literal["user_statement"]
     recorded_at: AwareDatetime
     statement_type: Literal[
-        "context_initialization", "proposal_confirmation", "proposal_correction"
+        "context_initialization",
+        "proposal_confirmation",
+        "proposal_correction",
+        "workflow_answer",
     ]
     statement: JsonObject | None = None
 
@@ -200,7 +203,7 @@ class ProposedAssertion(TopoModel):
     object_ref: Ref | None = None
     object_value: ObjectValue | None = None
     valid_time: ValidTime
-    knowledge_type: Literal["inferred"]
+    knowledge_type: Literal["inferred", "user_provided"]
     module_data: JsonObject
 
     @model_validator(mode="after")
@@ -646,7 +649,23 @@ class DiscoveryOutcome(TopoModel):
 
 
 class ProposalSubmitRequest(MutationRequest):
-    proposal: ProposedProposal
+    proposal: ProposedProposal | None = None
+    workflow_response: WorkflowProposalResponse | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_submission(self) -> ProposalSubmitRequest:
+        if (self.proposal is None) == (self.workflow_response is None):
+            raise ValueError(
+                "exactly one of proposal and workflow_response is required"
+            )
+        if self.workflow_response is not None:
+            if self.operation_id != self.workflow_response.action_id:
+                raise ValueError("workflow action_id must equal operation_id")
+            if self.actor.actor_type != "agent":
+                raise ValueError("workflow responses must be submitted by an agent")
+            if self.actor.actor_id != self.workflow_response.producer.producer_id:
+                raise ValueError("workflow producer must match the request actor")
+        return self
 
 
 class ProposedProposal(TopoModel):
@@ -656,6 +675,38 @@ class ProposedProposal(TopoModel):
     evidence_refs: tuple[Ref, ...] = Field(min_length=1)
     reason_ref: NonEmptyString
     detection: Detection | None = None
+
+
+class WorkflowAccountSource(TopoModel):
+    adapter_id: NonEmptyString
+    source_id: NonEmptyString
+
+
+class WorkflowAccountBalance(TopoModel):
+    account_ref: Ref
+    source: WorkflowAccountSource
+    money: Money
+
+
+class WorkflowProposalResponse(TopoModel):
+    action_id: UUID7
+    response_type: Literal["account_balances"]
+    analysis_id: Literal["analysis.net_worth"]
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    producer: Producer
+    balances: tuple[WorkflowAccountBalance, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_agent_batch(self) -> WorkflowProposalResponse:
+        if self.producer.producer_type != "agent":
+            raise ValueError("workflow response producer must be an agent")
+        account_ids = tuple(balance.account_ref.id for balance in self.balances)
+        if any(balance.account_ref.ref_type != "entity" for balance in self.balances):
+            raise ValueError("workflow account refs must be entity refs")
+        if len(account_ids) != len(set(account_ids)):
+            raise ValueError("workflow account balances must have unique account refs")
+        return self
 
 
 class ProposalDecisionRequest(MutationRequest):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -27,7 +26,7 @@ from topo.explanations import (
     index_analysis,
     index_rule_preview,
 )
-from topo.identifiers import uuid7
+from topo.identifiers import source_account_id, uuid7
 from topo.models import (
     Actor,
     AnalyzeRunRequest,
@@ -73,6 +72,7 @@ from topo.models import (
     UserStatementEvidenceRecord,
     ValidTime,
     WorkflowNextRequest,
+    WorkflowProposalResponse,
     model_to_json_object,
 )
 from topo.modules import ModuleCatalog
@@ -132,15 +132,6 @@ def _evidence_inventory_bytes(paths: tuple[str, ...]) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
-
-
-def _source_account_id(adapter_id: str, source_id: str) -> str:
-    digest = bytearray(
-        hashlib.sha256(f"{adapter_id}\x1f{source_id}".encode()).digest()[:16]
-    )
-    digest[6] = (digest[6] & 0x0F) | 0x70
-    digest[8] = (digest[8] & 0x3F) | 0x80
-    return str(uuid.UUID(bytes=bytes(digest)))
 
 
 class EngineCore:
@@ -805,6 +796,11 @@ class EngineCore:
         conflict = self._guard_request(validated.manifest, request)
         if conflict is not None:
             return conflict
+        if request.workflow_response is not None:
+            return self._submit_workflow_response(
+                validated, request, request.workflow_response
+            )
+        assert request.proposal is not None
         self._module_catalog.validate_proposed_assertion(
             request.proposal.proposed_assertion,
             validated.manifest.modules,
@@ -830,6 +826,169 @@ class EngineCore:
             mutation_id=mutation_id,
             generation_id=generation_id,
             proposals=(*validated.proposals.records, proposal),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
+    def _submit_workflow_response(
+        self,
+        validated: ValidatedPackage,
+        request: ProposalSubmitRequest,
+        response: WorkflowProposalResponse,
+    ) -> MutationOutcome:
+        workflow_request = WorkflowNextRequest(
+            contract_version=request.contract_version,
+            context_id=request.context_id,
+            analysis_id=response.analysis_id,
+            analysis_scope=response.analysis_scope,
+            as_of_date=response.as_of_date,
+        )
+        action_result = next_workflow_action(validated, workflow_request)
+        actions = cast(list[JsonObject], action_result["actions"])
+        action = next(
+            (
+                candidate
+                for candidate in actions
+                if candidate.get("action_id") == response.action_id
+            ),
+            None,
+        )
+        if action is None:
+            raise ProposalDecisionError(
+                "WORKFLOW_ACTION_NOT_CURRENT",
+                "/workflow_response/action_id",
+                "action_id does not identify the current workflow action",
+            )
+        if (
+            action.get("action_contract_version") != "topo.workflow-action/0.2"
+            or action.get("reason_code") != "NET_WORTH_NEEDS_ACCOUNT_BALANCE"
+        ):
+            raise ProposalDecisionError(
+                "WORKFLOW_RESPONSE_UNSUPPORTED",
+                "/workflow_response/response_type",
+                "the current workflow action does not accept account balances",
+            )
+
+        available_context = cast(JsonObject, action["available_context"])
+        account_contexts = cast(list[JsonObject], available_context["accounts"])
+        expected_accounts = {
+            str(cast(JsonObject, item["account_ref"])["id"]): item
+            for item in account_contexts
+        }
+        submitted_accounts = {
+            balance.account_ref.id: balance for balance in response.balances
+        }
+        if submitted_accounts.keys() != expected_accounts.keys():
+            raise ProposalDecisionError(
+                "WORKFLOW_ACCOUNT_BALANCES_INCOMPLETE",
+                "/workflow_response/balances",
+                "submit exactly one balance for every account in available_context",
+            )
+        entity_types = {
+            entity.id: entity.entity_type for entity in validated.entities.records
+        }
+        for account_id, balance in submitted_accounts.items():
+            expected_source = cast(JsonObject, expected_accounts[account_id]["source"])
+            if balance.source.model_dump(mode="json") != expected_source:
+                raise ProposalDecisionError(
+                    "WORKFLOW_ACCOUNT_SOURCE_MISMATCH",
+                    "/workflow_response/balances",
+                    "account source identity does not match its account_ref",
+                )
+            if entity_types.get(account_id) != "account":
+                raise ProposalDecisionError(
+                    "WORKFLOW_ACCOUNT_NOT_FOUND",
+                    "/workflow_response/balances",
+                    "account_ref does not resolve to an account entity",
+                )
+
+        proposed_assertions = {
+            account_id: ProposedAssertion(
+                subject_ref=balance.account_ref,
+                predicate="domain.accounts/balance",
+                object_value=ObjectValue(
+                    value_type="money",
+                    value=balance.money.model_dump(mode="json"),
+                ),
+                valid_time=ValidTime(
+                    start=response.as_of_date,
+                    end_exclusive=response.as_of_date + timedelta(days=1),
+                ),
+                knowledge_type="user_provided",
+                module_data={
+                    "economic_interest_ref": f"account:{account_id}",
+                    "valuation_basis": "account_balance",
+                },
+            )
+            for account_id, balance in submitted_accounts.items()
+        }
+        for proposed in proposed_assertions.values():
+            self._module_catalog.validate_proposed_assertion(
+                proposed,
+                validated.manifest.modules,
+                validated.assertions.records,
+                validated.entities.records,
+            )
+
+        now = self._now()
+        evidence_id = self._id_factory()
+        normalized_balances = [
+            submitted_accounts[account_id].model_dump(mode="json")
+            for account_id in sorted(submitted_accounts)
+        ]
+        answer_evidence = UserStatementEvidenceRecord(
+            id=evidence_id,
+            evidence_type="user_statement",
+            recorded_at=now,
+            statement_type="workflow_answer",
+            statement=cast(
+                JsonObject,
+                {
+                    "action_id": response.action_id,
+                    "response_type": response.response_type,
+                    "analysis_id": response.analysis_id,
+                    "analysis_scope": response.analysis_scope.model_dump(mode="json"),
+                    "as_of_date": response.as_of_date.isoformat(),
+                    "balances": normalized_balances,
+                },
+            ),
+        )
+        proposals: list[ProposalRecord] = []
+        proposal_ids: list[str] = []
+        for account_id in sorted(submitted_accounts):
+            proposal_id = self._id_factory()
+            proposal_ids.append(proposal_id)
+            proposals.append(
+                ProposalRecord(
+                    id=proposal_id,
+                    proposal_type="assertion",
+                    producer=response.producer,
+                    proposed_assertion=proposed_assertions[account_id],
+                    evidence_refs=(Ref(ref_type="evidence", id=evidence_id),),
+                    reason_ref=f"workflow-action:{response.action_id}",
+                    detection=None,
+                    status="open",
+                    created_at=now,
+                    decision=None,
+                )
+            )
+
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        result: JsonObject = {
+            "proposal_ids": cast(JsonValue, proposal_ids),
+            "evidence_id": evidence_id,
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="proposal.submit",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            evidence=(*validated.evidence.records, answer_evidence),
+            proposals=(*validated.proposals.records, *proposals),
             result=result,
             now=now,
         )
@@ -932,9 +1091,7 @@ class EngineCore:
         imported = 0
 
         for record in request.records:
-            account_id = _source_account_id(
-                request.adapter.adapter_id, record.source_id
-            )
+            account_id = source_account_id(request.adapter.adapter_id, record.source_id)
             if not any(entity.id == account_id for entity in entities):
                 entities.append(
                     EntityRecord(

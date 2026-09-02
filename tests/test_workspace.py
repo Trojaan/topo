@@ -74,6 +74,19 @@ def test_workspace_init_is_agent_ready_and_idempotent(tmp_path: Path) -> None:
         content = (workspace / filename).read_text(encoding="utf-8")
         assert content.count(TOPO_START) == 1
         assert "Never edit files inside `context.topo/` directly" in content
+        assert "Ask the user for meaningful missing information" in content
+        assert "Do not inspect Topo's implementation" in content
+        assert "use unrelated transactions as evidence" in content
+        assert "report the contract gap" in content
+        assert "Check the installed version with `topo --version`" in content
+        assert (
+            "curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh"
+            in content
+        )
+        assert (
+            "irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex"
+            in content
+        )
     gitignore = (workspace / ".gitignore").read_text(encoding="utf-8")
     assert "context.topo/" in gitignore
     assert "imports/" in gitignore

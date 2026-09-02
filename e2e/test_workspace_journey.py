@@ -52,5 +52,12 @@ def test_user_initializes_an_agent_ready_workspace(tmp_path: Path) -> None:
     repeated_body = body(repeated)
     assert repeated_body["outcome"] == "no_change"
     assert repeated_body["generation_before"] == status_body["generation_after"]
-    assert (workspace / "AGENTS.md").read_text().count("<!-- topo:start -->") == 1
-    assert (workspace / "CLAUDE.md").read_text().count("<!-- topo:start -->") == 1
+    for filename in ("AGENTS.md", "CLAUDE.md"):
+        instructions = (workspace / filename).read_text()
+        assert instructions.count("<!-- topo:start -->") == 1
+        assert "Ask the user for meaningful missing information" in instructions
+        assert "Do not inspect Topo's implementation" in instructions
+        assert "use unrelated transactions as evidence" in instructions
+        assert "Check the installed version with `topo --version`" in instructions
+        assert "install.sh | bash" in instructions
+        assert "install.ps1 | iex" in instructions

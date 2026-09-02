@@ -645,6 +645,34 @@ def test_contract_discovery_includes_executable_proposal_commands() -> None:
     Draft202012Validator.check_schema(schema["output_schema"])
     assert "authorization" in schema["input_schema"]["required"]
 
+    submit_schema_response = run_topo(
+        "contract",
+        "schema",
+        "proposal.submit",
+        request={"contract_version": "topo.cli/0.1"},
+    )
+    assert submit_schema_response.returncode == 0, submit_schema_response.stderr
+    submit_schema = json.loads(submit_schema_response.stdout)["result"]
+    assert submit_schema["input_schema_ref"].endswith("/0.2")
+    assert submit_schema["output_schema_ref"].endswith("/0.2")
+    Draft202012Validator.check_schema(submit_schema["input_schema"])
+    Draft202012Validator.check_schema(submit_schema["output_schema"])
+    assert {"proposal", "workflow_response"} <= set(
+        submit_schema["input_schema"]["properties"]
+    )
+    assert len(submit_schema["input_schema"]["oneOf"]) == 2
+
+    workflow_schema_response = run_topo(
+        "contract",
+        "schema",
+        "workflow.next",
+        request={"contract_version": "topo.cli/0.1"},
+    )
+    assert workflow_schema_response.returncode == 0, workflow_schema_response.stderr
+    workflow_schema = json.loads(workflow_schema_response.stdout)["result"]
+    assert workflow_schema["output_schema_ref"].endswith("/0.2")
+    Draft202012Validator.check_schema(workflow_schema["output_schema"])
+
 
 def test_user_can_correct_a_relation_proposal(tmp_path: Path) -> None:
     package = tmp_path / "relation.topo"

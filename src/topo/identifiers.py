@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 import threading
 import time
@@ -9,6 +10,16 @@ UUID7_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 _lock = threading.Lock()
 _last_millisecond = -1
 _random_sequence = 0
+
+
+def source_account_id(adapter_id: str, source_id: str) -> str:
+    """Return the stable local account id for one literal source identity."""
+    digest = bytearray(
+        hashlib.sha256(f"{adapter_id}\x1f{source_id}".encode()).digest()[:16]
+    )
+    digest[6] = (digest[6] & 0x0F) | 0x70
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(digest)))
 
 
 def uuid7() -> str:

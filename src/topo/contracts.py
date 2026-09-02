@@ -60,7 +60,17 @@ MUTATING_COMMANDS = {
 
 def schema_ref(command: str, direction: str) -> str:
     slug = command.replace(".", "-")
-    return f"topo://schema/{slug}-{direction}/0.1"
+    version = (
+        "0.2"
+        if (command, direction)
+        in {
+            ("proposal.submit", "request"),
+            ("proposal.submit", "response"),
+            ("workflow.next", "response"),
+        }
+        else "0.1"
+    )
+    return f"topo://schema/{slug}-{direction}/{version}"
 
 
 def _uuid7() -> SchemaObject:
@@ -185,6 +195,20 @@ def _actor() -> SchemaObject:
             "actor_id": {"type": "string", "minLength": 1},
         },
     }
+
+
+def _producer(*, agent_only: bool = False) -> SchemaObject:
+    producer_type: SchemaObject = (
+        {"const": "agent"} if agent_only else {"enum": ["agent", "rule_module"]}
+    )
+    return _closed_object(
+        {
+            "producer_type": producer_type,
+            "producer_id": {"type": "string", "minLength": 1},
+            "producer_version": {"type": "string", "minLength": 1},
+        },
+        ("producer_type", "producer_id", "producer_version"),
+    )
 
 
 def _authorization() -> SchemaObject:
@@ -328,14 +352,7 @@ def _mutation_input(command: str) -> SchemaObject:
         properties["proposal"] = _closed_object(
             {
                 "proposal_type": {"const": "assertion"},
-                "producer": _closed_object(
-                    {
-                        "producer_type": {"enum": ["agent", "rule_module"]},
-                        "producer_id": {"type": "string", "minLength": 1},
-                        "producer_version": {"type": "string", "minLength": 1},
-                    },
-                    ("producer_type", "producer_id", "producer_version"),
-                ),
+                "producer": _producer(),
                 "proposed_assertion": {
                     **_closed_object(
                         {
@@ -359,7 +376,7 @@ def _mutation_input(command: str) -> SchemaObject:
                                 },
                                 ("start", "end_exclusive"),
                             ),
-                            "knowledge_type": {"const": "inferred"},
+                            "knowledge_type": {"enum": ["inferred", "user_provided"]},
                             "module_data": {"type": "object"},
                         },
                         (
@@ -411,7 +428,49 @@ def _mutation_input(command: str) -> SchemaObject:
                 "reason_ref",
             ),
         )
-        required.append("proposal")
+        properties["workflow_response"] = _closed_object(
+            {
+                "action_id": _uuid7(),
+                "response_type": {"const": "account_balances"},
+                "analysis_id": {"const": "analysis.net_worth"},
+                "analysis_scope": _scope(),
+                "as_of_date": {"type": "string", "format": "date"},
+                "producer": _producer(agent_only=True),
+                "balances": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _closed_object(
+                        {
+                            "account_ref": _ref(("entity",)),
+                            "source": _closed_object(
+                                {
+                                    "adapter_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                    "source_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                },
+                                ("adapter_id", "source_id"),
+                            ),
+                            "money": _money(),
+                        },
+                        ("account_ref", "source", "money"),
+                    ),
+                },
+            },
+            (
+                "action_id",
+                "response_type",
+                "analysis_id",
+                "analysis_scope",
+                "as_of_date",
+                "producer",
+                "balances",
+            ),
+        )
     if command == "proposal.correct":
         properties["correction"] = {
             **_closed_object(
@@ -440,7 +499,7 @@ def _mutation_input(command: str) -> SchemaObject:
             ],
         }
         required.append("correction")
-    return {
+    schema: SchemaObject = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": schema_ref(command, "request"),
         "type": "object",
@@ -448,6 +507,12 @@ def _mutation_input(command: str) -> SchemaObject:
         "required": required,
         "properties": properties,
     }
+    if command == "proposal.submit":
+        schema["oneOf"] = [
+            {"required": ["proposal"], "not": {"required": ["workflow_response"]}},
+            {"required": ["workflow_response"], "not": {"required": ["proposal"]}},
+        ]
+    return schema
 
 
 def input_schema(command: str) -> SchemaObject:
@@ -873,10 +938,22 @@ def _result_schema(command: str) -> SchemaObject:
             ("candidates", "attention_items"),
         )
     if command == "proposal.submit":
-        return _closed_object(
-            {"proposal_id": _uuid7()},
-            ("proposal_id",),
-        )
+        return {
+            "oneOf": [
+                _closed_object({"proposal_id": _uuid7()}, ("proposal_id",)),
+                _closed_object(
+                    {
+                        "proposal_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": _uuid7(),
+                        },
+                        "evidence_id": _uuid7(),
+                    },
+                    ("proposal_ids", "evidence_id"),
+                ),
+            ]
+        }
     if command == "proposal.confirm":
         return _closed_object(
             {
@@ -1341,36 +1418,95 @@ def _diagnostic_schema() -> SchemaObject:
 
 
 def _next_action_schema() -> SchemaObject:
-    return _closed_object(
+    common = {
+        "action_id": _uuid7(),
+        "action_type": {"type": "string", "minLength": 1},
+        "priority": {"enum": ["blocking", "required", "helpful", "optional"]},
+        "reason_code": {"type": "string", "minLength": 1},
+        "affected_component": {"type": ["string", "null"]},
+        "related_refs": {"type": "array", "items": _ref()},
+        "command": {"enum": list(COMMANDS)},
+        "request_template": {"type": "object"},
+        "input_schema_ref": {"type": "string"},
+        "requires_user_input": {"type": "boolean"},
+        "requires_authorization": {"type": "boolean"},
+    }
+    required = (
+        "action_id",
+        "action_type",
+        "action_contract_version",
+        "priority",
+        "reason_code",
+        "affected_component",
+        "related_refs",
+        "command",
+        "request_template",
+        "input_schema_ref",
+        "requires_user_input",
+        "requires_authorization",
+    )
+    legacy = _closed_object(
         {
-            "action_id": _uuid7(),
-            "action_type": {"type": "string", "minLength": 1},
+            **common,
             "action_contract_version": {"const": "topo.workflow-action/0.1"},
-            "priority": {"enum": ["blocking", "required", "helpful", "optional"]},
-            "reason_code": {"type": "string", "minLength": 1},
-            "affected_component": {"type": ["string", "null"]},
-            "related_refs": {"type": "array", "items": _ref()},
-            "command": {"enum": list(COMMANDS)},
-            "request_template": {"type": "object"},
-            "input_schema_ref": {"type": "string"},
-            "requires_user_input": {"type": "boolean"},
-            "requires_authorization": {"type": "boolean"},
+        },
+        required,
+    )
+    executable = _closed_object(
+        {
+            **common,
+            "action_contract_version": {"const": "topo.workflow-action/0.2"},
+            "question": {"type": "string", "minLength": 1},
+            "available_context": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["accounts"],
+                "properties": {
+                    "accounts": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": _closed_object(
+                            {
+                                "account_ref": _ref(("entity",)),
+                                "source": _closed_object(
+                                    {
+                                        "adapter_id": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                        },
+                                        "source_id": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                        },
+                                    },
+                                    ("adapter_id", "source_id"),
+                                ),
+                            },
+                            ("account_ref", "source"),
+                        ),
+                    }
+                },
+            },
+            "user_input_schema": {"type": "object"},
+            "user_input_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "agent_input_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
         },
         (
-            "action_id",
-            "action_type",
-            "action_contract_version",
-            "priority",
-            "reason_code",
-            "affected_component",
-            "related_refs",
-            "command",
-            "request_template",
-            "input_schema_ref",
-            "requires_user_input",
-            "requires_authorization",
+            *required,
+            "question",
+            "available_context",
+            "user_input_schema",
+            "user_input_paths",
+            "agent_input_paths",
         ),
     )
+    return {"oneOf": [legacy, executable]}
 
 
 def output_schema(command: str) -> SchemaObject:

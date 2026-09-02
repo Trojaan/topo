@@ -134,6 +134,17 @@ uv run topo workflow next --package /tmp/example.topo --request /tmp/workflow-ne
 The same JSON may be supplied through stdin. `--package` selects storage; it does
 not silently choose the analysis scope or valuation date.
 
+When imported accounts are known but their balances are missing, the returned
+`topo.workflow-action/0.2` action is executable without inspecting package files
+or Topo's implementation. It includes the question, literal adapter/source
+identity for each account, separate user and agent input paths, and a complete
+`proposal.submit` request template. Fill only those declared paths. Submitting
+the `workflow_response` records the normalized batch once as `workflow_answer`
+evidence and atomically creates one open balance proposal per account. It does
+not confirm those proposals; confirmation still requires explicit human
+authorization. Do not substitute transaction evidence for the user's balance
+statement.
+
 For an effect-free scenario comparison, use `analysis.scenario_comparison`, a
 future `as_of_date`, one reporting currency, and a non-empty `scenario` with a
 stable `scenario_id`. The only accepted assumption types are
