@@ -57,7 +57,14 @@ bounded retention with an explicit restore point, and package-wide privacy scrub
 through the public CLI. Unit integration tests additionally prove incompatible
 migration has no effect and scrubbed assertions are marked unverifiable.
 
-Together, `tests/` and `e2e/` are the reproducible v0.1 acceptance suite invoked by
+The proactive-workflow journey validates every generated request against its
+published schema, proposes manual accounts plus balances, allocation and coverage
+as one batch, verifies checksum-bound authorization and atomic confirmation,
+recomputes provisional net worth, and proves that the next missing basis domain is
+asked immediately. Separate fixtures cover explicit empty coverage, stale
+generations, rejection, replay and all-or-nothing invalid batches.
+
+Together, `tests/` and `e2e/` are the reproducible v0.2 acceptance suite invoked by
 `scripts/verify.sh`. They cover the three normative handoff journeys—empty context,
 transactions to monthly cashflow, and net worth plus scenario—as well as the
 minimum safety fixtures for replay, authorization, correction, stale generations,

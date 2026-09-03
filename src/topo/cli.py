@@ -44,6 +44,8 @@ from topo.models import (
     JsonObject,
     MutationOutcome,
     Outcome,
+    ProposalBatchConfirmRequest,
+    ProposalBatchRejectRequest,
     ProposalConfirmRequest,
     ProposalCorrectRequest,
     ProposalRejectRequest,
@@ -55,6 +57,7 @@ from topo.models import (
     SourceImportRequest,
     Trace,
     WorkflowNextRequest,
+    WorkflowRespondRequest,
     WorkspaceInitRequest,
     model_to_json_object,
 )
@@ -195,6 +198,58 @@ def _write_explanation_text(result: JsonObject, locale: str) -> None:
     sys.stdout.write("\n".join(lines) + "\n")
 
 
+def _write_workflow_text(result: JsonObject) -> None:
+    changes = cast(JsonObject, result["change_summary"])
+    sections = cast(list[JsonObject], result["context_sections"])
+    analyses = cast(list[JsonObject], result["analysis_results"])
+    action = cast(JsonObject | None, result["next_action"])
+    changed = sum(
+        len(cast(list[JsonValue], changes.get(key, [])))
+        for key in ("confirmed", "proposed", "replaced", "rejected")
+    )
+    confirmed = sum(
+        len(cast(list[JsonValue], section.get("confirmed_items", [])))
+        for section in sections
+    )
+    uncertain = sum(
+        len(cast(list[JsonValue], section.get("open_proposals", [])))
+        + sum(
+            requirement.get("state") != "present"
+            for requirement in cast(list[JsonObject], section.get("requirements", []))
+        )
+        for section in sections
+    )
+    insights = (
+        ", ".join(
+            f"{analysis.get('analysis_id', 'analyse')}: {analysis.get('status', 'beschikbaar')}"
+            for analysis in analyses
+        )
+        or "Nog geen analyse beschikbaar."
+    )
+    question = (
+        str(action.get("question", "Voer de voorgestelde vervolgstap uit."))
+        if action is not None
+        else "Geen vervolgvraag; de gevraagde context is compleet."
+    )
+    lines = (
+        "Zojuist gewijzigd",
+        f"{changed} wijziging(en) sinds de opgegeven generatie.",
+        "",
+        "Bevestigde context",
+        f"{confirmed} bevestigd(e) contextitem(s) in {len(sections)} secties.",
+        "",
+        "Openstaand en onzeker",
+        f"{uncertain} open voorstel(len) of ontbrekende vereiste(n).",
+        "",
+        "Actuele inzichten",
+        insights,
+        "",
+        "Volgende vraag",
+        question,
+    )
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
 def _require_supported_contract(request: JsonObject) -> None:
     requested = request.get("contract_version")
     if requested != CONTRACT_VERSION:
@@ -297,7 +352,14 @@ def _parser() -> argparse.ArgumentParser:
 
     proposal = commands.add_parser("proposal")
     proposal_commands = proposal.add_subparsers(dest="proposal_command", required=True)
-    for name in ("submit", "confirm", "correct", "reject"):
+    for name in (
+        "submit",
+        "confirm",
+        "correct",
+        "reject",
+        "confirm-batch",
+        "reject-batch",
+    ):
         proposal_command = proposal_commands.add_parser(name)
         proposal_command.add_argument("--package", type=Path, required=True)
 
@@ -327,6 +389,8 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="read the workflow.next JSON request from PATH (defaults to stdin)",
     )
+    workflow_respond = workflow_commands.add_parser("respond")
+    workflow_respond.add_argument("--package", type=Path, required=True)
     rule = commands.add_parser("rule")
     rule_commands = rule.add_subparsers(dest="rule_command", required=True)
     for name in ("validate", "preview", "activate"):
@@ -368,8 +432,13 @@ def _mutation_envelope(
         }
         reason_code = "SOURCE_IMPORT_REQUIRES_AUTHORIZATION"
         if command.startswith("proposal."):
-            request_template["proposal_ref"] = request.get("proposal_ref")
+            if "batch_id" in request:
+                request_template["batch_id"] = request["batch_id"]
+            else:
+                request_template["proposal_ref"] = request.get("proposal_ref")
             reason_code = "PROPOSAL_DECISION_REQUIRES_AUTHORIZATION"
+        if command == "context.migrate":
+            reason_code = "CONTEXT_MIGRATION_REQUIRES_AUTHORIZATION"
         if command == "rule.activate":
             reason_code = "RULE_ACTIVATION_REQUIRES_AUTHORIZATION"
         next_actions = (
@@ -678,17 +747,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             workflow_result, generation = EngineCore(
                 FileSystemStorageAdapter(args.package)
             ).workflow_next(workflow_request)
-            _write_json(
-                _success_envelope(
-                    command,
-                    request,
-                    workflow_result,
-                    context_id=workflow_request.context_id,
-                    generation_before=generation,
-                    generation_after=generation,
-                    refs=(Ref(ref_type="generation", id=generation),),
+            envelope = _success_envelope(
+                command,
+                request,
+                workflow_result,
+                context_id=workflow_request.context_id,
+                generation_before=generation,
+                generation_after=generation,
+                refs=(Ref(ref_type="generation", id=generation),),
+            )
+            if json_output:
+                _write_json(envelope)
+            else:
+                _write_workflow_text(workflow_result)
+            return 0
+        if command == "workflow.respond":
+            outcome = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).respond_to_workflow(
+                WorkflowRespondRequest.model_validate_json(
+                    json.dumps(request), strict=True
                 )
             )
+            _write_json(_mutation_envelope(command, request, outcome))
             return 0
         if command == "explain":
             engine = EngineCore(FileSystemStorageAdapter(args.package))
@@ -758,9 +839,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                         json.dumps(request), strict=True
                     )
                 )
-            else:
+            elif command == "proposal.reject":
                 outcome = engine.reject_proposal(
                     ProposalRejectRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            elif command == "proposal.confirm-batch":
+                outcome = engine.confirm_proposal_batch(
+                    ProposalBatchConfirmRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            else:
+                outcome = engine.reject_proposal_batch(
+                    ProposalBatchRejectRequest.model_validate_json(
                         json.dumps(request), strict=True
                     )
                 )

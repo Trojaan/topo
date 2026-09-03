@@ -97,3 +97,26 @@ stable English identifiers.
 Domain modules own universal financial meaning. Jurisdiction modules overlay only
 meaning that is genuinely jurisdiction-specific. Presentation language is a
 separate concern, and machine identifiers stay stable English.
+
+## Proactieve contextcyclus (context 0.2)
+
+`workflow.next` inventariseert na iedere generatie de actuele context opnieuw en
+herberekent de actieve effectvrije analyses. Het antwoord bevat altijd een
+wijzigingsoverzicht, acht vaste contextsecties, analyseresultaten en hoogstens één
+vervolgactie. De deterministische prioriteit is: migratie of integriteit,
+batchautorisatie, feitenconflict, vereisten van het actieve doel, ontbrekende
+basiscontext en ten slotte optionele verdieping.
+
+De minimale basiscontext bestaat uit huishouden, rekeningen, terugkerende
+cashflow, bezittingen, schulden, pensioenen, contracten/verzekeringen en doelen.
+Ieder domein beheert een eigen `inventory_coverage`-bewering. Ontbrekende dekking
+betekent onbekend. Alleen een bevestigde complete inventaris met een lege
+`item_refs`-lijst betekent dat er voor dat domein geen items zijn; dit maakt
+onbekende geldbedragen niet stilzwijgend nul.
+
+Een antwoord via `workflow.respond` wordt één voorstelbatch met één bewijsrecord.
+Nieuwe entiteiten en hun labels, typen, waarden, toerekeningen en dekking blijven
+open voorstellen totdat `proposal.confirm-batch` een checksumgebonden preview en
+expliciete menselijke autorisatie ontvangt. De batch wordt volledig gevalideerd
+en in één generatie bevestigd of geheel niet gepubliceerd. Afwijzen gebeurt voor
+de hele batch; correcties bewaren eerdere feiten en bewijs in de historie.

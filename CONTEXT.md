@@ -395,3 +395,17 @@ Een expliciete, gedateerde en gemotiveerde wijziging binnen een scenario: een te
 ## Projectie
 
 Een deterministisch berekende toekomstige maandcashflow of, waar mogelijk, nettovermogenswaarde op basis van financiële feiten, bekende wijzigingen en aannames binnen een scenario. Cashflowoverschotten of -tekorten veranderen vermogen alleen via een expliciete aanname over bestemming of financiering; een projectie wordt nooit een financieel feit.
+
+## Inventarisdekking
+
+Een tijdsgebonden bewering van één financieel domein over de reikwijdte van een
+inventarisatie voor een persoon of huishouden op een peildatum. `complete` met een
+lege lijst betekent expliciet dat in dat domein geen items zijn opgegeven.
+Ontbrekende dekking betekent onbekend en mag niet als nul worden geïnterpreteerd.
+
+## Voorstelbatch
+
+Een samenhangende, door één gebruikersantwoord ontstane verzameling voorstellen
+voor entiteiten en beweringen. De batch heeft één zichtbare checksumgebonden
+preview en wordt na expliciete menselijke autorisatie volledig atomair bevestigd;
+een ongeldig onderdeel verhindert publicatie van de hele batch.

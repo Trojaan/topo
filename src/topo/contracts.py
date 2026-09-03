@@ -33,8 +33,11 @@ COMMANDS = (
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
+    "proposal.confirm-batch",
+    "proposal.reject-batch",
     "analyze.run",
     "workflow.next",
+    "workflow.respond",
     "rule.validate",
     "rule.preview",
     "rule.activate",
@@ -54,6 +57,9 @@ MUTATING_COMMANDS = {
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
+    "proposal.confirm-batch",
+    "proposal.reject-batch",
+    "workflow.respond",
     "rule.activate",
 }
 
@@ -66,7 +72,14 @@ def schema_ref(command: str, direction: str) -> str:
         in {
             ("proposal.submit", "request"),
             ("proposal.submit", "response"),
+            ("workflow.respond", "request"),
+            ("workflow.respond", "response"),
             ("workflow.next", "response"),
+            ("workflow.next", "request"),
+            ("proposal.confirm-batch", "request"),
+            ("proposal.confirm-batch", "response"),
+            ("proposal.reject-batch", "request"),
+            ("proposal.reject-batch", "response"),
         }
         else "0.1"
     )
@@ -105,6 +118,119 @@ def _money() -> SchemaObject:
             "currency": {"type": "string", "pattern": r"^[A-Z]{3}$"},
         },
         ("amount", "currency"),
+    )
+
+
+def _workflow_context_item_schema() -> SchemaObject:
+    return _closed_object(
+        {
+            "item_id": _uuid7(),
+            "label": {"type": "string", "minLength": 1},
+            "entity_ref": {"oneOf": [_ref(("entity",)), {"type": "null"}]},
+            "entity_type": {
+                "enum": [
+                    "person",
+                    "account",
+                    "asset",
+                    "debt",
+                    "contract",
+                    "pension_entitlement",
+                    "goal",
+                    "recurring_cashflow",
+                ]
+            },
+            "classification": {"type": ["string", "null"], "minLength": 1},
+            "money": {"oneOf": [_money(), {"type": "null"}]},
+            "amount_range": {
+                "oneOf": [
+                    _closed_object(
+                        {"minimum": _money(), "maximum": _money()},
+                        ("minimum", "maximum"),
+                    ),
+                    {"type": "null"},
+                ]
+            },
+            "typical_money": {"oneOf": [_money(), {"type": "null"}]},
+            "direction": {"enum": ["inflow", "outflow", None]},
+            "frequency": {
+                "enum": [
+                    "weekly",
+                    "four_weekly",
+                    "monthly",
+                    "quarterly",
+                    "annual",
+                    None,
+                ]
+            },
+            "expected_period": {
+                "oneOf": [
+                    _closed_object(
+                        {
+                            "start_date": {"type": "string", "format": "date"},
+                            "end_exclusive": {"type": "string", "format": "date"},
+                        },
+                        ("start_date", "end_exclusive"),
+                    ),
+                    {"type": "null"},
+                ]
+            },
+            "valid_from": {"type": ["string", "null"], "format": "date"},
+            "target_date": {"type": ["string", "null"], "format": "date"},
+            "target_money": {"oneOf": [_money(), {"type": "null"}]},
+            "household_share": {
+                "type": ["string", "null"],
+                "pattern": r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$",
+            },
+            "source": {
+                "oneOf": [
+                    _closed_object(
+                        {
+                            "adapter_id": {"type": "string", "minLength": 1},
+                            "source_id": {"type": "string", "minLength": 1},
+                        },
+                        ("adapter_id", "source_id"),
+                    ),
+                    {"type": "null"},
+                ]
+            },
+        },
+        ("item_id", "label", "entity_type"),
+    )
+
+
+def _workflow_context_response_schema() -> SchemaObject:
+    return _closed_object(
+        {
+            "action_id": _uuid7(),
+            "response_type": {"const": "context_inventory"},
+            "section_id": {
+                "enum": [
+                    "household",
+                    "accounts",
+                    "cashflow",
+                    "assets",
+                    "debts",
+                    "pensions",
+                    "contracts_insurance",
+                    "goals",
+                ]
+            },
+            "analysis_scope": _scope(),
+            "as_of_date": {"type": "string", "format": "date"},
+            "producer": _producer(agent_only=True),
+            "coverage": {"enum": ["partial", "complete"]},
+            "items": {"type": "array", "items": _workflow_context_item_schema()},
+        },
+        (
+            "action_id",
+            "response_type",
+            "section_id",
+            "analysis_scope",
+            "as_of_date",
+            "producer",
+            "coverage",
+            "items",
+        ),
     )
 
 
@@ -253,6 +379,12 @@ def _mutation_input(command: str) -> SchemaObject:
     if command in {"proposal.confirm", "proposal.correct"}:
         properties["authorization"] = {"oneOf": [_authorization(), {"type": "null"}]}
         required.append("authorization")
+    if command in {"proposal.confirm-batch", "proposal.reject-batch"}:
+        properties["batch_id"] = _uuid7()
+        required.append("batch_id")
+    if command == "proposal.confirm-batch":
+        properties["authorization"] = {"oneOf": [_authorization(), {"type": "null"}]}
+        required.append("authorization")
     if command == "source.import":
         properties.update(
             {
@@ -316,6 +448,7 @@ def _mutation_input(command: str) -> SchemaObject:
                     "propertyNames": {"type": "string", "minLength": 1},
                     "additionalProperties": {"type": "string", "minLength": 1},
                 },
+                "authorization": {"oneOf": [_authorization(), {"type": "null"}]},
             }
         )
         required.extend(
@@ -325,6 +458,9 @@ def _mutation_input(command: str) -> SchemaObject:
                 "target_module_versions",
             ]
         )
+    if command == "workflow.respond":
+        properties["workflow_response"] = _workflow_context_response_schema()
+        required.append("workflow_response")
     if command == "context.restore":
         properties["restore_generation"] = _uuid7()
         required.append("restore_generation")
@@ -627,9 +763,30 @@ def input_schema(command: str) -> SchemaObject:
         properties.update(
             {
                 "context_id": _uuid7(),
+                "workflow_contract_version": {"const": "topo.workflow/0.2"},
                 "analysis_id": {"const": "analysis.net_worth"},
                 "analysis_scope": _scope(),
                 "as_of_date": {"type": "string", "format": "date"},
+                "include_basis_context": {"type": "boolean"},
+                "since_generation": {"oneOf": [_uuid7(), {"type": "null"}]},
+                "reporting_currency": {
+                    "oneOf": [
+                        _closed_object(
+                            {
+                                "currency": {
+                                    "type": "string",
+                                    "pattern": r"^[A-Z]{3}$",
+                                },
+                                "allowed_rate_assertion_refs": {
+                                    "type": "array",
+                                    "items": _ref(("assertion",)),
+                                },
+                            },
+                            ("currency", "allowed_rate_assertion_refs"),
+                        ),
+                        {"type": "null"},
+                    ]
+                },
             }
         )
         required.extend(["context_id", "analysis_id", "analysis_scope", "as_of_date"])
@@ -731,17 +888,22 @@ def _result_schema(command: str) -> SchemaObject:
             ),
         )
     if command == "context.migrate":
-        return _closed_object(
-            {
-                "package_version": {"type": "string"},
-                "context_schema_version": {"type": "string"},
-                "module_versions": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
-            },
-            ("package_version", "context_schema_version", "module_versions"),
-        )
+        return {
+            "oneOf": [
+                _closed_object(
+                    {
+                        "package_version": {"type": "string"},
+                        "context_schema_version": {"type": "string"},
+                        "module_versions": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                    },
+                    ("package_version", "context_schema_version", "module_versions"),
+                ),
+                _authorization_preview_schema(),
+            ]
+        }
     if command == "context.restore":
         return _closed_object(
             {"restored_from_generation": _uuid7()},
@@ -954,6 +1116,19 @@ def _result_schema(command: str) -> SchemaObject:
                 ),
             ]
         }
+    if command == "workflow.respond":
+        return _closed_object(
+            {
+                "batch_id": _uuid7(),
+                "proposal_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _uuid7(),
+                },
+                "evidence_id": _uuid7(),
+            },
+            ("batch_id", "proposal_ids", "evidence_id"),
+        )
     if command == "proposal.confirm":
         return _closed_object(
             {
@@ -990,6 +1165,41 @@ def _result_schema(command: str) -> SchemaObject:
                 },
             },
             ("proposal_id", "decision_ref"),
+        )
+    if command == "proposal.confirm-batch":
+        return {
+            "oneOf": [
+                _authorization_preview_schema(),
+                _closed_object(
+                    {
+                        "batch_id": _uuid7(),
+                        "proposal_ids": {"type": "array", "items": _uuid7()},
+                        "entity_ids": {"type": "array", "items": _uuid7()},
+                        "assertion_ids": {"type": "array", "items": _uuid7()},
+                        "evidence_id": _uuid7(),
+                        "decision_ref": {
+                            "type": "string",
+                            "pattern": f"^decision:{UUID7_PATTERN[1:-1]}$",
+                        },
+                    },
+                    (
+                        "batch_id",
+                        "proposal_ids",
+                        "entity_ids",
+                        "assertion_ids",
+                        "evidence_id",
+                        "decision_ref",
+                    ),
+                ),
+            ]
+        }
+    if command == "proposal.reject-batch":
+        return _closed_object(
+            {
+                "batch_id": _uuid7(),
+                "proposal_ids": {"type": "array", "items": _uuid7()},
+            },
+            ("batch_id", "proposal_ids"),
         )
     if command in {"rule.validate", "rule.preview"}:
         validation_properties: SchemaObject = {
@@ -1383,10 +1593,48 @@ def _result_schema(command: str) -> SchemaObject:
         )
     if command == "workflow.next":
         return _closed_object(
-            {"actions": {"type": "array", "items": _next_action_schema()}},
-            ("actions",),
+            {
+                "workflow_contract_version": {"const": "topo.workflow/0.2"},
+                "scope": _scope(),
+                "as_of_date": {"type": "string", "format": "date"},
+                "used_generation": _uuid7(),
+                "change_summary": {"type": "object"},
+                "context_sections": {"type": "array", "items": {"type": "object"}},
+                "analysis_results": {"type": "array", "items": {"type": "object"}},
+                "next_action": {"oneOf": [_next_action_schema(), {"type": "null"}]},
+                "actions": {
+                    "type": "array",
+                    "maxItems": 1,
+                    "items": _next_action_schema(),
+                },
+            },
+            (
+                "workflow_contract_version",
+                "scope",
+                "as_of_date",
+                "used_generation",
+                "change_summary",
+                "context_sections",
+                "analysis_results",
+                "next_action",
+                "actions",
+            ),
         )
     raise KeyError(command)
+
+
+def _authorization_preview_schema() -> SchemaObject:
+    return _closed_object(
+        {
+            "preview_ref": {
+                "type": "string",
+                "pattern": r"^preview:sha256:[0-9a-f]{64}$",
+            },
+            "batch_id": _uuid7(),
+            "effects": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        },
+        ("preview_ref", "effects"),
+    )
 
 
 def _diagnostic_schema() -> SchemaObject:
@@ -1506,7 +1754,32 @@ def _next_action_schema() -> SchemaObject:
             "agent_input_paths",
         ),
     )
-    return {"oneOf": [legacy, executable]}
+    proactive = _closed_object(
+        {
+            **common,
+            "action_contract_version": {"const": "topo.workflow-action/0.3"},
+            "question": {"type": "string", "minLength": 1},
+            "available_context": {"type": "object"},
+            "user_input_schema": {"type": "object"},
+            "user_input_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "agent_input_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
+        (
+            *required,
+            "question",
+            "available_context",
+            "user_input_schema",
+            "user_input_paths",
+            "agent_input_paths",
+        ),
+    )
+    return {"oneOf": [legacy, executable, proactive]}
 
 
 def output_schema(command: str) -> SchemaObject:

@@ -78,6 +78,10 @@ def test_workspace_init_is_agent_ready_and_idempotent(tmp_path: Path) -> None:
         assert "Do not inspect Topo's implementation" in content
         assert "use unrelated transactions as evidence" in content
         assert "report the contract gap" in content
+        assert "After every successful mutation" in content
+        assert "never wait" in content
+        assert "Zojuist gewijzigd" in content
+        assert "Volgende vraag" in content
         assert "Check the installed version with `topo --version`" in content
         assert (
             "curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh"

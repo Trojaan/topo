@@ -55,16 +55,34 @@ def test_administrator_can_manage_the_complete_context_lifecycle(
         )["modules"]
     }
 
+    migration_request = {
+        **mutation(context_id, first, "Migreer gecontroleerd"),
+        "target_package_version": "0.2",
+        "target_context_schema_version": "topo.context/0.2",
+        "target_module_versions": module_versions,
+        "authorization": None,
+    }
+    migration_preview = run_topo(
+        "context",
+        "migrate",
+        "--package",
+        str(package),
+        request=migration_request,
+    )
     migrated = run_topo(
         "context",
         "migrate",
         "--package",
         str(package),
         request={
-            **mutation(context_id, first, "Migreer gecontroleerd"),
-            "target_package_version": "0.1",
-            "target_context_schema_version": "topo.context/0.1",
-            "target_module_versions": module_versions,
+            **migration_request,
+            "authorization": {
+                "preview_ref": str(
+                    cast(dict[str, object], migration_preview["result"])["preview_ref"]
+                ),
+                "authorized_by": {"actor_type": "human", "actor_id": "beheerder"},
+                "authorized_at": "2026-09-03T10:00:00Z",
+            },
         },
     )
     restored = run_topo(

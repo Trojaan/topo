@@ -15,6 +15,7 @@ from topo.models import (
     ContextRestoreRequest,
     ContextRetentionRequest,
     Money,
+    MutationOutcome,
     SourceAdapter,
     SourceImportRecord,
     SourceImportRequest,
@@ -49,24 +50,48 @@ def _module_versions(package: Path, generation: str) -> dict[str, str]:
     }
 
 
+def _migrate(
+    engine: EngineCore, package: Path, context_id: str, generation: str, reason: str
+) -> MutationOutcome:
+    request = ContextMigrateRequest(
+        contract_version="topo.cli/0.1",
+        operation_id=uuid7(),
+        context_id=context_id,
+        expected_generation=generation,
+        actor=Actor(actor_type="human", actor_id="beheerder"),
+        reason=reason,
+        target_package_version="0.2",
+        target_context_schema_version="topo.context/0.2",
+        target_module_versions=_module_versions(package, generation),
+        authorization=None,
+    )
+    preview = engine.migrate_context(request)
+    assert preview.outcome == "requires_authorization"
+    return engine.migrate_context(
+        request.model_copy(
+            update={
+                "authorization": Authorization(
+                    preview_ref=str(preview.result["preview_ref"]),
+                    authorized_by=Actor(actor_type="human", actor_id="beheerder"),
+                    authorized_at=datetime(2026, 8, 29, 10, 0, tzinfo=UTC),
+                )
+            }
+        )
+    )
+
+
 def test_compatible_migration_publishes_only_a_fully_valid_new_generation(
     tmp_path: Path,
 ) -> None:
     package = tmp_path / "context.topo"
     engine, context_id, original_generation = _initialize(package)
 
-    outcome = engine.migrate_context(
-        ContextMigrateRequest(
-            contract_version="topo.cli/0.1",
-            operation_id=uuid7(),
-            context_id=context_id,
-            expected_generation=original_generation,
-            actor=Actor(actor_type="human", actor_id="beheerder"),
-            reason="Valideer huidige schema- en moduleversies opnieuw",
-            target_package_version="0.1",
-            target_context_schema_version="topo.context/0.1",
-            target_module_versions=_module_versions(package, original_generation),
-        )
+    outcome = _migrate(
+        engine,
+        package,
+        context_id,
+        original_generation,
+        "Valideer huidige schema- en moduleversies opnieuw",
     )
 
     assert outcome.outcome == "succeeded"
@@ -88,7 +113,7 @@ def test_incompatible_migration_leaves_current_generation_intact(
 
     for package_version, schema_version, module_versions in (
         ("1.0", "topo.context/1.0", supported_modules),
-        ("0.1", "topo.context/0.1", unsupported_modules),
+        ("0.2", "topo.context/0.2", unsupported_modules),
     ):
         outcome = engine.migrate_context(
             ContextMigrateRequest(
@@ -115,18 +140,8 @@ def test_restore_validates_an_old_generation_and_publishes_a_new_generation(
 ) -> None:
     package = tmp_path / "context.topo"
     engine, context_id, original_generation = _initialize(package)
-    migrated = engine.migrate_context(
-        ContextMigrateRequest(
-            contract_version="topo.cli/0.1",
-            operation_id=uuid7(),
-            context_id=context_id,
-            expected_generation=original_generation,
-            actor=Actor(actor_type="human", actor_id="beheerder"),
-            reason="Maak een tweede generatie",
-            target_package_version="0.1",
-            target_context_schema_version="topo.context/0.1",
-            target_module_versions=_module_versions(package, original_generation),
-        )
+    migrated = _migrate(
+        engine, package, context_id, original_generation, "Maak een tweede generatie"
     )
 
     restored = engine.restore_context(
@@ -165,18 +180,12 @@ def test_bounded_retention_keeps_current_latest_and_explicit_restore_points(
     engine, context_id, original_generation = _initialize(package)
     generations = [original_generation]
     for _ in range(3):
-        migrated = engine.migrate_context(
-            ContextMigrateRequest(
-                contract_version="topo.cli/0.1",
-                operation_id=uuid7(),
-                context_id=context_id,
-                expected_generation=generations[-1],
-                actor=Actor(actor_type="human", actor_id="beheerder"),
-                reason="Maak retentiehistorie",
-                target_package_version="0.1",
-                target_context_schema_version="topo.context/0.1",
-                target_module_versions=_module_versions(package, generations[-1]),
-            )
+        migrated = _migrate(
+            engine,
+            package,
+            context_id,
+            generations[-1],
+            "Maak retentiehistorie",
         )
         generations.append(migrated.generation_after)
 
@@ -210,18 +219,8 @@ def test_privacy_scrub_removes_selected_evidence_from_the_whole_package(
     original_evidence = json.loads(
         (package / "generations" / original_generation / "evidence.json").read_text()
     )["records"][0]["id"]
-    migrated = engine.migrate_context(
-        ContextMigrateRequest(
-            contract_version="topo.cli/0.1",
-            operation_id=uuid7(),
-            context_id=context_id,
-            expected_generation=original_generation,
-            actor=Actor(actor_type="human", actor_id="beheerder"),
-            reason="Maak privacyhistorie",
-            target_package_version="0.1",
-            target_context_schema_version="topo.context/0.1",
-            target_module_versions=_module_versions(package, original_generation),
-        )
+    migrated = _migrate(
+        engine, package, context_id, original_generation, "Maak privacyhistorie"
     )
 
     scrubbed = engine.scrub_privacy(

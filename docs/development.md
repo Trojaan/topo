@@ -145,6 +145,15 @@ not confirm those proposals; confirmation still requires explicit human
 authorization. Do not substitute transaction evidence for the user's balance
 statement.
 
+For the proactive cycle, call `workflow.next` with
+`workflow_contract_version: topo.workflow/0.2`, `include_basis_context: true`, and
+the prior generation as `since_generation`. Execute its effect-free steps, submit
+typed user information through `workflow.respond`, preview and authorize a pending
+batch once, then call `workflow.next` again. Stop only when the returned action asks
+for user information, conflict resolution, or authorization. Human output uses the
+fixed headings `Zojuist gewijzigd`, `Bevestigde context`, `Openstaand en onzeker`,
+`Actuele inzichten`, and `Volgende vraag`.
+
 For an effect-free scenario comparison, use `analysis.scenario_comparison`, a
 future `as_of_date`, one reporting currency, and a non-empty `scenario` with a
 stable `scenario_id`. The only accepted assumption types are
@@ -193,4 +202,4 @@ x64/arm64, glibc Linux x64/arm64, and Windows x64. Each executable completes the
 contract, workspace-init, and context-status smoke flow before upload. After all
 artifacts are published, the same workflow runs `install.sh` or `install.ps1`
 against the public release. Re-run an installer to upgrade; there is no in-CLI
-self-update command in v0.1.
+self-update command in v0.2.

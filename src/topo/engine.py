@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 
@@ -53,6 +53,8 @@ from topo.models import (
     MutationRequest,
     ObjectValue,
     Producer,
+    ProposalBatchConfirmRequest,
+    ProposalBatchRejectRequest,
     ProposalConfirmRequest,
     ProposalCorrectRequest,
     ProposalDecision,
@@ -60,6 +62,7 @@ from topo.models import (
     ProposalRejectRequest,
     ProposalSubmitRequest,
     ProposedAssertion,
+    ProposedEntity,
     Ref,
     RuleActivateRequest,
     RulePackagePin,
@@ -71,8 +74,10 @@ from topo.models import (
     SourceReference,
     UserStatementEvidenceRecord,
     ValidTime,
+    WorkflowContextItem,
     WorkflowNextRequest,
     WorkflowProposalResponse,
+    WorkflowRespondRequest,
     model_to_json_object,
 )
 from topo.modules import ModuleCatalog
@@ -284,8 +289,8 @@ class EngineCore:
         if conflict is not None:
             return conflict
         if (
-            request.target_package_version != "0.1"
-            or request.target_context_schema_version != "topo.context/0.1"
+            request.target_package_version != "0.2"
+            or request.target_context_schema_version != "topo.context/0.2"
             or request.target_module_versions
             != {pin.module_id: pin.module_version for pin in self._module_catalog.pins}
         ):
@@ -296,14 +301,38 @@ class EngineCore:
                 outcome="rejected",
                 result={
                     "reason": "incompatible_target_version",
-                    "supported_package_versions": ["0.1"],
-                    "supported_context_schema_versions": ["topo.context/0.1"],
+                    "supported_package_versions": ["0.2"],
+                    "supported_context_schema_versions": ["topo.context/0.2"],
                     "supported_module_versions": {
                         pin.module_id: pin.module_version
                         for pin in self._module_catalog.pins
                     },
                 },
             )
+        migration_basis = {
+            "command": "context.migrate",
+            "context_id": request.context_id,
+            "expected_generation": request.expected_generation,
+            "target_package_version": request.target_package_version,
+            "target_context_schema_version": request.target_context_schema_version,
+            "target_module_versions": request.target_module_versions,
+        }
+        migration_digest = hashlib.sha256(
+            json.dumps(migration_basis, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        preview: JsonObject = {
+            "preview_ref": f"preview:sha256:{migration_digest}",
+            "effects": [
+                {
+                    "action": "publish_migrated_generation",
+                    "from_context_schema": validated.manifest.context_schema_version,
+                    "to_context_schema": request.target_context_schema_version,
+                }
+            ],
+        }
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        self._validate_authorization(request.authorization, preview)
         now = self._now()
         generation_id = self._id_factory()
         result: JsonObject = {
@@ -322,6 +351,8 @@ class EngineCore:
             result=result,
             now=now,
             modules=self._module_catalog.pins,
+            package_version="0.2",
+            context_schema_version="topo.context/0.2",
         )
         self._commit_update(publication, validated.manifest.generation_id)
         return self._success(request, generation_id, result)
@@ -613,13 +644,16 @@ class EngineCore:
         return replace(
             validated,
             assertions=CanonicalCollection[AssertionRecord](
-                schema_version="topo.context/0.1", records=tuple(assertions)
+                schema_version=validated.assertions.schema_version,
+                records=tuple(assertions),
             ),
             evidence=CanonicalCollection[EvidenceRecord](
-                schema_version="topo.context/0.1", records=evidence
+                schema_version=validated.evidence.schema_version,
+                records=evidence,
             ),
             proposals=CanonicalCollection[ProposalRecord](
-                schema_version="topo.context/0.1", records=proposals
+                schema_version=validated.proposals.schema_version,
+                records=proposals,
             ),
             source_records=source_records,
         )
@@ -832,6 +866,408 @@ class EngineCore:
         self._commit_update(publication, request.expected_generation)
         return self._success(request, generation_id, result)
 
+    def respond_to_workflow(self, request: WorkflowRespondRequest) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        if validated.manifest.context_schema_version != "topo.context/0.2":
+            raise ProposalDecisionError(
+                "CONTEXT_MIGRATION_REQUIRED",
+                "/expected_generation",
+                "workflow responses require topo.context/0.2",
+            )
+        response = request.workflow_response
+        workflow_request = WorkflowNextRequest(
+            contract_version=request.contract_version,
+            context_id=request.context_id,
+            analysis_scope=response.analysis_scope,
+            as_of_date=response.as_of_date,
+            include_basis_context=True,
+        )
+        current = next_workflow_action(validated, workflow_request)
+        action = cast(JsonObject | None, current.get("next_action"))
+        if action is None or action.get("action_id") != response.action_id:
+            raise ProposalDecisionError(
+                "WORKFLOW_ACTION_NOT_CURRENT",
+                "/workflow_response/action_id",
+                "action_id does not identify the current workflow action",
+            )
+        if action.get("command") != "workflow.respond":
+            raise ProposalDecisionError(
+                "WORKFLOW_RESPONSE_UNSUPPORTED",
+                "/workflow_response/response_type",
+                "the current workflow action does not accept a context inventory",
+            )
+
+        section_modules = {
+            "household": "domain.parties",
+            "accounts": "domain.accounts",
+            "cashflow": "domain.cashflow",
+            "assets": "domain.assets",
+            "debts": "domain.debts",
+            "pensions": "domain.pensions",
+            "contracts_insurance": "domain.contracts",
+            "goals": "domain.goals",
+        }
+        entity_modules: dict[
+            str,
+            Literal[
+                "domain.parties",
+                "domain.accounts",
+                "domain.assets",
+                "domain.debts",
+                "domain.contracts",
+                "domain.pensions",
+                "domain.goals",
+            ],
+        ] = {
+            "person": "domain.parties",
+            "account": "domain.accounts",
+            "asset": "domain.assets",
+            "debt": "domain.debts",
+            "contract": "domain.contracts",
+            "pension_entitlement": "domain.pensions",
+            "goal": "domain.goals",
+        }
+        expected_module = section_modules[response.section_id]
+        now = self._now()
+        batch_id = self._id_factory()
+        evidence_id = self._id_factory()
+        existing_entities = {entity.id: entity for entity in validated.entities.records}
+        proposed_entities: list[ProposedEntity] = []
+        assertions: list[ProposedAssertion] = []
+
+        def add_assertion(
+            subject_id: str,
+            predicate: str,
+            *,
+            object_ref: Ref | None = None,
+            object_value: ObjectValue | None = None,
+            end_exclusive: date | None = None,
+            module_data: JsonObject | None = None,
+        ) -> None:
+            assertions.append(
+                ProposedAssertion(
+                    subject_ref=Ref(ref_type="entity", id=subject_id),
+                    predicate=predicate,
+                    object_ref=object_ref,
+                    object_value=object_value,
+                    valid_time=ValidTime(
+                        start=response.as_of_date, end_exclusive=end_exclusive
+                    ),
+                    knowledge_type="user_provided",
+                    module_data=module_data or {},
+                )
+            )
+
+        item_entity_ids: list[str] = []
+        for item in response.items:
+            if item.entity_type == "recurring_cashflow":
+                self._append_recurring_workflow_assertion(
+                    assertions,
+                    item,
+                    response.analysis_scope.entity_id,
+                    response.as_of_date,
+                )
+                continue
+            module_id = entity_modules[item.entity_type]
+            if module_id != expected_module:
+                raise ProposalDecisionError(
+                    "WORKFLOW_ITEM_WRONG_SECTION",
+                    "/workflow_response/items",
+                    "item entity type does not belong to the selected section",
+                )
+            entity_id = (
+                item.entity_ref.id if item.entity_ref is not None else item.item_id
+            )
+            if item.entity_ref is not None:
+                entity = existing_entities.get(entity_id)
+                if (
+                    item.entity_ref.ref_type != "entity"
+                    or entity is None
+                    or entity.entity_type != item.entity_type
+                ):
+                    raise ProposalDecisionError(
+                        "WORKFLOW_ENTITY_NOT_FOUND",
+                        "/workflow_response/items",
+                        "entity_ref does not resolve to the declared item type",
+                    )
+            else:
+                if entity_id in existing_entities or any(
+                    entity.id == entity_id for entity in proposed_entities
+                ):
+                    raise ProposalDecisionError(
+                        "WORKFLOW_ENTITY_ID_CONFLICT",
+                        "/workflow_response/items",
+                        "new workflow item id is not unique",
+                    )
+                proposed_entities.append(
+                    ProposedEntity(
+                        id=entity_id,
+                        entity_type=item.entity_type,
+                        module_id=module_id,
+                    )
+                )
+            item_entity_ids.append(entity_id)
+            add_assertion(
+                entity_id,
+                "topo.core/label",
+                object_value=ObjectValue(value_type="text", value=item.label),
+            )
+            if item.classification is not None:
+                classification = item.classification
+                if "/" not in classification:
+                    classification = f"{module_id}/classification/{classification}"
+                add_assertion(
+                    entity_id,
+                    classification,
+                    object_value=ObjectValue(value_type="boolean", value=True),
+                )
+            value_contract = {
+                "account": ("domain.accounts/balance", "account_balance"),
+                "asset": ("domain.assets/value", "asset_value"),
+                "debt": ("domain.debts/balance", "debt_balance"),
+                "pension_entitlement": ("domain.pensions/value", "pension_value"),
+            }.get(item.entity_type)
+            if item.money is not None and value_contract is not None:
+                predicate, basis = value_contract
+                add_assertion(
+                    entity_id,
+                    predicate,
+                    object_value=ObjectValue(
+                        value_type="money", value=item.money.model_dump(mode="json")
+                    ),
+                    end_exclusive=response.as_of_date + timedelta(days=1),
+                    module_data={
+                        "economic_interest_ref": f"{item.entity_type}:{entity_id}",
+                        "valuation_basis": basis,
+                    },
+                )
+            if item.entity_type == "goal":
+                add_assertion(
+                    entity_id,
+                    "domain.goals/definition",
+                    object_value=ObjectValue(
+                        value_type="goal_definition",
+                        value={
+                            "target_date": (
+                                item.target_date.isoformat()
+                                if item.target_date is not None
+                                else None
+                            ),
+                            "target_money": (
+                                item.target_money.model_dump(mode="json")
+                                if item.target_money is not None
+                                else None
+                            ),
+                        },
+                    ),
+                )
+            if item.source is not None and item.entity_type == "account":
+                add_assertion(
+                    entity_id,
+                    "domain.accounts/external_identity",
+                    object_value=ObjectValue(
+                        value_type="external_identity",
+                        value=item.source.model_dump(mode="json"),
+                    ),
+                )
+            if item.household_share is not None:
+                relation = (
+                    "domain.parties/household_allocation"
+                    if response.analysis_scope.scope_type == "household"
+                    else {
+                        "account": "domain.parties/account_holder",
+                        "debt": "domain.parties/debtor",
+                        "pension_entitlement": "domain.parties/beneficiary",
+                    }.get(item.entity_type, "domain.parties/ownership")
+                )
+                add_assertion(
+                    entity_id,
+                    relation,
+                    object_ref=Ref(
+                        ref_type="entity", id=response.analysis_scope.entity_id
+                    ),
+                    module_data={
+                        "distribution": {
+                            "complete": item.household_share == "1",
+                            "shares": [item.household_share],
+                        }
+                    },
+                )
+
+        coverage_predicate = {
+            "household": "domain.parties/inventory_coverage",
+            "accounts": "domain.accounts/inventory_coverage",
+            "cashflow": "domain.cashflow/inventory_coverage",
+            "assets": "domain.assets/inventory_coverage",
+            "debts": "domain.debts/inventory_coverage",
+            "pensions": "domain.pensions/inventory_coverage",
+            "contracts_insurance": "domain.contracts/inventory_coverage",
+            "goals": "domain.goals/inventory_coverage",
+        }[response.section_id]
+        add_assertion(
+            response.analysis_scope.entity_id,
+            coverage_predicate,
+            object_value=ObjectValue(
+                value_type="inventory_coverage",
+                value={
+                    "coverage": response.coverage,
+                    "as_of_date": response.as_of_date.isoformat(),
+                    "item_refs": [
+                        {"ref_type": "entity", "id": entity_id}
+                        for entity_id in item_entity_ids
+                    ],
+                },
+            ),
+            end_exclusive=response.as_of_date + timedelta(days=1),
+        )
+
+        final_entities = (
+            *validated.entities.records,
+            *(
+                EntityRecord(
+                    id=entity.id,
+                    entity_type=entity.entity_type,
+                    module_id=entity.module_id,
+                    created_at=now,
+                )
+                for entity in proposed_entities
+            ),
+        )
+        for assertion in assertions:
+            self._module_catalog.validate_proposed_assertion(
+                assertion,
+                validated.manifest.modules,
+                validated.assertions.records,
+                final_entities,
+            )
+        evidence = UserStatementEvidenceRecord(
+            id=evidence_id,
+            evidence_type="user_statement",
+            recorded_at=now,
+            statement_type="workflow_answer",
+            statement=response.model_dump(mode="json"),
+        )
+        records: list[ProposalRecord] = []
+        proposal_ids: list[str] = []
+        for proposed_entity in proposed_entities:
+            proposal_id = self._id_factory()
+            proposal_ids.append(proposal_id)
+            records.append(
+                ProposalRecord(
+                    id=proposal_id,
+                    proposal_type="entity",
+                    producer=response.producer,
+                    proposed_entity=proposed_entity,
+                    batch_id=batch_id,
+                    evidence_refs=(Ref(ref_type="evidence", id=evidence_id),),
+                    reason_ref=f"workflow-action:{response.action_id}",
+                    detection=None,
+                    status="open",
+                    created_at=now,
+                    decision=None,
+                )
+            )
+        for assertion in assertions:
+            proposal_id = self._id_factory()
+            proposal_ids.append(proposal_id)
+            records.append(
+                ProposalRecord(
+                    id=proposal_id,
+                    proposal_type="assertion",
+                    producer=response.producer,
+                    proposed_assertion=assertion,
+                    batch_id=batch_id,
+                    evidence_refs=(Ref(ref_type="evidence", id=evidence_id),),
+                    reason_ref=f"workflow-action:{response.action_id}",
+                    detection=None,
+                    status="open",
+                    created_at=now,
+                    decision=None,
+                )
+            )
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        result: JsonObject = {
+            "batch_id": batch_id,
+            "proposal_ids": cast(JsonValue, proposal_ids),
+            "evidence_id": evidence_id,
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="workflow.respond",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            evidence=(*validated.evidence.records, evidence),
+            proposals=(*validated.proposals.records, *records),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
+    @staticmethod
+    def _append_recurring_workflow_assertion(
+        assertions: list[ProposedAssertion],
+        item: WorkflowContextItem,
+        scope_id: str,
+        as_of_date: date,
+    ) -> None:
+        if (
+            (item.money is None and item.amount_range is None)
+            or item.direction is None
+            or item.frequency is None
+            or item.expected_period is None
+        ):
+            raise ProposalDecisionError(
+                "WORKFLOW_CASHFLOW_INCOMPLETE",
+                "/workflow_response/items",
+                "recurring cashflow requires amount, direction, frequency and expected period",
+            )
+        assertions.append(
+            ProposedAssertion(
+                subject_ref=Ref(ref_type="entity", id=scope_id),
+                predicate="domain.cashflow/recurring_cashflow",
+                object_value=ObjectValue(
+                    value_type="recurring_cashflow",
+                    value={
+                        "frequency": item.frequency,
+                        "direction": item.direction,
+                        "expected_period": item.expected_period.model_dump(mode="json"),
+                        "money": (
+                            item.money.model_dump(mode="json")
+                            if item.money is not None
+                            else None
+                        ),
+                        "amount_range": (
+                            item.amount_range.model_dump(mode="json")
+                            if item.amount_range is not None
+                            else None
+                        ),
+                        "typical_money": (
+                            item.typical_money.model_dump(mode="json")
+                            if item.typical_money is not None
+                            else None
+                        ),
+                    },
+                ),
+                valid_time=ValidTime(
+                    start=item.valid_from or as_of_date, end_exclusive=None
+                ),
+                knowledge_type="user_provided",
+                module_data={
+                    "label": item.label,
+                    "classification": item.classification,
+                },
+            )
+        )
+
     def _submit_workflow_response(
         self,
         validated: ValidatedPackage,
@@ -966,6 +1402,7 @@ class EngineCore:
                     proposal_type="assertion",
                     producer=response.producer,
                     proposed_assertion=proposed_assertions[account_id],
+                    batch_id=response.action_id,
                     evidence_refs=(Ref(ref_type="evidence", id=evidence_id),),
                     reason_ref=f"workflow-action:{response.action_id}",
                     detection=None,
@@ -1089,9 +1526,102 @@ class EngineCore:
         transaction_refs: list[Ref] = []
         source_records: dict[str, bytes] = {}
         imported = 0
+        external_accounts: dict[tuple[str, str], str] = {}
+        for assertion in validated.assertions.records:
+            if (
+                assertion.predicate != "domain.accounts/external_identity"
+                or assertion.verification_status != "confirmed"
+                or assertion.object_value is None
+                or assertion.object_value.value_type != "external_identity"
+                or not isinstance(assertion.object_value.value, dict)
+            ):
+                continue
+            identity = assertion.object_value.value
+            adapter_id = identity.get("adapter_id")
+            source_id = identity.get("source_id")
+            if isinstance(adapter_id, str) and isinstance(source_id, str):
+                key = (adapter_id, source_id)
+                if (
+                    key in external_accounts
+                    and external_accounts[key] != assertion.subject_ref.id
+                ):
+                    raise PackageIntegrityError(
+                        "external account identity resolves to multiple accounts"
+                    )
+                external_accounts[key] = assertion.subject_ref.id
+
+        identity_merges = self._identity_merge_candidates(
+            validated, request, external_accounts
+        )
+        if identity_merges:
+            identity_evidence_id = self._id_factory()
+            evidence.append(
+                UserStatementEvidenceRecord(
+                    id=identity_evidence_id,
+                    evidence_type="user_statement",
+                    recorded_at=now,
+                    statement_type="workflow_answer",
+                    statement={
+                        "response_type": "account_identity_merge",
+                        "adapter_id": request.adapter.adapter_id,
+                        "links": [
+                            {"source_id": source_id, "account_id": account_id}
+                            for source_id, account_id in sorted(identity_merges.items())
+                        ],
+                        "authorization": request.authorization.model_dump(mode="json"),
+                    },
+                )
+            )
+            for source_id, account_id in sorted(identity_merges.items()):
+                proposed_identity = ProposedAssertion(
+                    subject_ref=Ref(ref_type="entity", id=account_id),
+                    predicate="domain.accounts/external_identity",
+                    object_value=ObjectValue(
+                        value_type="external_identity",
+                        value={
+                            "adapter_id": request.adapter.adapter_id,
+                            "source_id": source_id,
+                        },
+                    ),
+                    valid_time=ValidTime(
+                        start=min(
+                            record.booking_date
+                            for record in request.records
+                            if record.source_id == source_id
+                        ),
+                        end_exclusive=None,
+                    ),
+                    knowledge_type="user_provided",
+                    module_data={},
+                )
+                self._module_catalog.validate_proposed_assertion(
+                    proposed_identity,
+                    validated.manifest.modules,
+                    tuple(assertions),
+                    tuple(entities),
+                )
+                assertions.append(
+                    AssertionRecord(
+                        id=self._id_factory(),
+                        subject_ref=proposed_identity.subject_ref,
+                        predicate=proposed_identity.predicate,
+                        object_value=proposed_identity.object_value,
+                        valid_time=proposed_identity.valid_time,
+                        recorded_at=now,
+                        knowledge_type=proposed_identity.knowledge_type,
+                        verification_status="confirmed",
+                        provenance=(Ref(ref_type="evidence", id=identity_evidence_id),),
+                        supersedes=None,
+                        module_data={},
+                    )
+                )
+                external_accounts[(request.adapter.adapter_id, source_id)] = account_id
 
         for record in request.records:
-            account_id = source_account_id(request.adapter.adapter_id, record.source_id)
+            account_id = external_accounts.get(
+                (request.adapter.adapter_id, record.source_id),
+                source_account_id(request.adapter.adapter_id, record.source_id),
+            )
             if not any(entity.id == account_id for entity in entities):
                 entities.append(
                     EntityRecord(
@@ -1254,12 +1784,19 @@ class EngineCore:
         proposal = self._open_proposal(
             validated.proposals.records, request.proposal_ref
         )
+        proposed = proposal.proposed_assertion
+        if proposed is None:
+            raise ProposalDecisionError(
+                "PROPOSAL_REQUIRES_BATCH",
+                "/proposal_ref",
+                "entity proposals must be decided through their batch",
+            )
         preview = self._preview_result("proposal.confirm", request, proposal.id)
         if request.authorization is None:
             return self._authorization_required(request, preview)
         self._validate_authorization(request.authorization, preview)
         self._module_catalog.validate_proposed_assertion(
-            proposal.proposed_assertion,
+            proposed,
             validated.manifest.modules,
             validated.assertions.records,
             validated.entities.records,
@@ -1269,7 +1806,6 @@ class EngineCore:
         assertion_id = self._id_factory()
         mutation_id = self._id_factory()
         generation_id = self._id_factory()
-        proposed = proposal.proposed_assertion
         confirmation_evidence = UserStatementEvidenceRecord(
             id=evidence_id,
             evidence_type="user_statement",
@@ -1332,6 +1868,242 @@ class EngineCore:
         self._commit_update(publication, request.expected_generation)
         return self._success(request, generation_id, result)
 
+    def confirm_proposal_batch(
+        self, request: ProposalBatchConfirmRequest
+    ) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        batch = tuple(
+            proposal
+            for proposal in validated.proposals.records
+            if proposal.batch_id == request.batch_id
+        )
+        if not batch:
+            raise ProposalDecisionError(
+                "PROPOSAL_BATCH_NOT_FOUND", "/batch_id", "batch_id does not resolve"
+            )
+        if any(proposal.status != "open" for proposal in batch):
+            raise ProposalDecisionError(
+                "PROPOSAL_BATCH_NOT_OPEN",
+                "/batch_id",
+                "proposal batch is no longer wholly open",
+            )
+        preview = self._batch_preview_result(request, batch)
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        self._validate_authorization(request.authorization, preview)
+
+        now = self._now()
+        proposed_entities = tuple(
+            proposal.proposed_entity
+            for proposal in batch
+            if proposal.proposed_entity is not None
+        )
+        new_entities = tuple(
+            EntityRecord(
+                id=entity.id,
+                entity_type=entity.entity_type,
+                module_id=entity.module_id,
+                created_at=now,
+            )
+            for entity in proposed_entities
+        )
+        if {entity.id for entity in new_entities} & {
+            entity.id for entity in validated.entities.records
+        }:
+            raise ProposalDecisionError(
+                "PROPOSAL_ENTITY_CONFLICT",
+                "/batch_id",
+                "a proposed entity already exists",
+            )
+        final_entities = (*validated.entities.records, *new_entities)
+        proposed_assertions = tuple(
+            proposal.proposed_assertion
+            for proposal in batch
+            if proposal.proposed_assertion is not None
+        )
+        final_entity_ids = {entity.id for entity in final_entities}
+        for proposed in proposed_assertions:
+            if proposed.subject_ref.id not in final_entity_ids or (
+                proposed.object_ref is not None
+                and proposed.object_ref.id not in final_entity_ids
+            ):
+                raise ProposalDecisionError(
+                    "PROPOSAL_BATCH_REFERENCE_UNRESOLVED",
+                    "/batch_id",
+                    "a batch assertion refers outside canonical or batch-local entities",
+                )
+            if (
+                proposed.predicate.endswith("/inventory_coverage")
+                and proposed.object_value is not None
+                and isinstance(proposed.object_value.value, dict)
+            ):
+                refs = proposed.object_value.value.get("item_refs", [])
+                if not isinstance(refs, list) or any(
+                    not isinstance(ref, dict) or ref.get("id") not in final_entity_ids
+                    for ref in refs
+                ):
+                    raise ProposalDecisionError(
+                        "PROPOSAL_BATCH_COVERAGE_UNRESOLVED",
+                        "/batch_id",
+                        "inventory coverage contains an unresolved entity",
+                    )
+            self._module_catalog.validate_proposed_assertion(
+                proposed,
+                validated.manifest.modules,
+                (*validated.assertions.records,),
+                final_entities,
+            )
+
+        evidence_id = self._id_factory()
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        confirmation_evidence = UserStatementEvidenceRecord(
+            id=evidence_id,
+            evidence_type="user_statement",
+            recorded_at=now,
+            statement_type="proposal_confirmation",
+            statement={
+                "batch_id": request.batch_id,
+                "proposal_ids": [proposal.id for proposal in batch],
+                "reason": request.reason,
+                "authorization": request.authorization.model_dump(mode="json"),
+            },
+        )
+        assertions: list[AssertionRecord] = []
+        assertion_ids: dict[str, str] = {}
+        for proposal in batch:
+            proposed_assertion = proposal.proposed_assertion
+            if proposed_assertion is None:
+                continue
+            assertion_id = self._id_factory()
+            assertion_ids[proposal.id] = assertion_id
+            assertions.append(
+                AssertionRecord(
+                    id=assertion_id,
+                    subject_ref=proposed_assertion.subject_ref,
+                    predicate=proposed_assertion.predicate,
+                    object_ref=proposed_assertion.object_ref,
+                    object_value=proposed_assertion.object_value,
+                    valid_time=proposed_assertion.valid_time,
+                    recorded_at=now,
+                    knowledge_type=proposed_assertion.knowledge_type,
+                    verification_status="confirmed",
+                    provenance=(
+                        *proposal.evidence_refs,
+                        Ref(ref_type="proposal", id=proposal.id),
+                        Ref(ref_type="evidence", id=evidence_id),
+                    ),
+                    supersedes=None,
+                    module_data=proposed_assertion.module_data,
+                )
+            )
+        decided_by_id = {
+            proposal.id: proposal.model_copy(
+                update={
+                    "status": "confirmed",
+                    "decision": ProposalDecision(
+                        outcome="confirmed",
+                        actor=request.authorization.authorized_by,
+                        decided_at=request.authorization.authorized_at,
+                        mutation_id=mutation_id,
+                        assertion_id=assertion_ids.get(proposal.id),
+                    ),
+                }
+            )
+            for proposal in batch
+        }
+        result: JsonObject = {
+            "batch_id": request.batch_id,
+            "proposal_ids": [proposal.id for proposal in batch],
+            "entity_ids": [entity.id for entity in new_entities],
+            "assertion_ids": list(assertion_ids.values()),
+            "evidence_id": evidence_id,
+            "decision_ref": f"decision:{mutation_id}",
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="proposal.confirm-batch",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            entities=final_entities,
+            assertions=(*validated.assertions.records, *assertions),
+            evidence=(*validated.evidence.records, confirmation_evidence),
+            proposals=tuple(
+                decided_by_id.get(proposal.id, proposal)
+                for proposal in validated.proposals.records
+            ),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
+    def reject_proposal_batch(
+        self, request: ProposalBatchRejectRequest
+    ) -> MutationOutcome:
+        validated = self._load_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        batch = tuple(
+            proposal
+            for proposal in validated.proposals.records
+            if proposal.batch_id == request.batch_id
+        )
+        if not batch or any(proposal.status != "open" for proposal in batch):
+            raise ProposalDecisionError(
+                "PROPOSAL_BATCH_NOT_OPEN",
+                "/batch_id",
+                "proposal batch is not wholly open",
+            )
+        now = self._now()
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        decided = {
+            proposal.id: proposal.model_copy(
+                update={
+                    "status": "rejected",
+                    "decision": ProposalDecision(
+                        outcome="rejected",
+                        actor=request.actor,
+                        decided_at=now,
+                        mutation_id=mutation_id,
+                        assertion_id=None,
+                    ),
+                }
+            )
+            for proposal in batch
+        }
+        result: JsonObject = {
+            "batch_id": request.batch_id,
+            "proposal_ids": [proposal.id for proposal in batch],
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="proposal.reject-batch",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            proposals=tuple(
+                decided.get(proposal.id, proposal)
+                for proposal in validated.proposals.records
+            ),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
     def correct_proposal(self, request: ProposalCorrectRequest) -> MutationOutcome:
         validated = self._load_existing()
         replay = self._replay(validated.journal, request.operation_id)
@@ -1344,6 +2116,12 @@ class EngineCore:
             validated.proposals.records, request.proposal_ref
         )
         proposed = proposal.proposed_assertion
+        if proposed is None:
+            raise ProposalDecisionError(
+                "PROPOSAL_REQUIRES_BATCH",
+                "/proposal_ref",
+                "entity proposals must be decided through their batch",
+            )
         corrected = proposed.model_copy(
             update={
                 "object_ref": request.correction.object_ref,
@@ -1572,6 +2350,41 @@ class EngineCore:
         }
 
     @staticmethod
+    def _batch_preview_result(
+        request: ProposalBatchConfirmRequest,
+        proposals: tuple[ProposalRecord, ...],
+    ) -> JsonObject:
+        normalized = [
+            proposal.model_dump(mode="json")
+            for proposal in sorted(proposals, key=lambda item: item.id)
+        ]
+        basis = {
+            "command": "proposal.confirm-batch",
+            "context_id": request.context_id,
+            "expected_generation": request.expected_generation,
+            "batch_id": request.batch_id,
+            "proposals": normalized,
+        }
+        digest = hashlib.sha256(
+            json.dumps(basis, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {
+            "preview_ref": f"preview:sha256:{digest}",
+            "batch_id": request.batch_id,
+            "effects": [
+                {
+                    "action": (
+                        "create_entity"
+                        if proposal.proposal_type == "entity"
+                        else "create_confirmed_assertion"
+                    ),
+                    "proposal_ref": proposal.id,
+                }
+                for proposal in sorted(proposals, key=lambda item: item.id)
+            ],
+        }
+
+    @staticmethod
     def _validate_authorization(
         authorization: Authorization, preview: JsonObject
     ) -> None:
@@ -1636,6 +2449,20 @@ class EngineCore:
         self, validated: ValidatedPackage, request: SourceImportRequest
     ) -> JsonObject:
         effects: list[JsonValue] = []
+        external_accounts = self._confirmed_external_accounts(validated)
+        for source_id, account_id in sorted(
+            self._identity_merge_candidates(
+                validated, request, external_accounts
+            ).items()
+        ):
+            effects.append(
+                {
+                    "action": "merge_external_account_identity",
+                    "adapter_id": request.adapter.adapter_id,
+                    "source_id": source_id,
+                    "account_ref": {"ref_type": "entity", "id": account_id},
+                }
+            )
         for record in request.records:
             prior = self._latest_source_evidence(
                 validated.evidence.records, request.adapter.adapter_id, record
@@ -1662,6 +2489,57 @@ class EngineCore:
             json.dumps(basis, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         return {"preview_ref": f"preview:sha256:{digest}", "effects": effects}
+
+    @staticmethod
+    def _confirmed_external_accounts(
+        validated: ValidatedPackage,
+    ) -> dict[tuple[str, str], str]:
+        result: dict[tuple[str, str], str] = {}
+        for assertion in validated.assertions.records:
+            if (
+                assertion.predicate != "domain.accounts/external_identity"
+                or assertion.verification_status != "confirmed"
+                or assertion.object_value is None
+                or assertion.object_value.value_type != "external_identity"
+                or not isinstance(assertion.object_value.value, dict)
+            ):
+                continue
+            adapter_id = assertion.object_value.value.get("adapter_id")
+            source_id = assertion.object_value.value.get("source_id")
+            if isinstance(adapter_id, str) and isinstance(source_id, str):
+                result[(adapter_id, source_id)] = assertion.subject_ref.id
+        return result
+
+    @staticmethod
+    def _identity_merge_candidates(
+        validated: ValidatedPackage,
+        request: SourceImportRequest,
+        external_accounts: dict[tuple[str, str], str],
+    ) -> dict[str, str]:
+        imported_account_ids = {
+            source_account_id(item.source.adapter_id, item.source.source_id)
+            for item in validated.evidence.records
+            if isinstance(item, SourceRecordEvidenceRecord)
+        }
+        linked_account_ids = set(external_accounts.values())
+        manual_accounts = [
+            entity.id
+            for entity in validated.entities.records
+            if entity.entity_type == "account"
+            and entity.id not in imported_account_ids
+            and entity.id not in linked_account_ids
+        ]
+        new_source_ids = sorted(
+            {
+                record.source_id
+                for record in request.records
+                if (request.adapter.adapter_id, record.source_id)
+                not in external_accounts
+            }
+        )
+        if len(manual_accounts) == 1 and len(new_source_ids) == 1:
+            return {new_source_ids[0]: manual_accounts[0]}
+        return {}
 
     @staticmethod
     def _transaction_for_evidence(
@@ -1748,6 +2626,9 @@ class EngineCore:
             "proposal.confirm",
             "proposal.correct",
             "proposal.reject",
+            "workflow.respond",
+            "proposal.confirm-batch",
+            "proposal.reject-batch",
             "rule.activate",
             "context.migrate",
             "context.restore",
@@ -1766,16 +2647,24 @@ class EngineCore:
         active_rule_packages: tuple[RulePackagePin, ...] | None = None,
         rule_package_files: dict[str, bytes] | None = None,
         modules: tuple[ModulePin, ...] | None = None,
+        package_version: Literal["0.1", "0.2"] | None = None,
+        context_schema_version: Literal["topo.context/0.1", "topo.context/0.2"]
+        | None = None,
         based_on: str | None = None,
         journal_entries: tuple[JournalEntry, ...] | None = None,
     ) -> PackageCommit:
         inventory_payload = _evidence_inventory_bytes(
             tuple({*validated.source_records, *(source_records or {})})
         )
+        target_context_schema = (
+            validated.manifest.context_schema_version
+            if context_schema_version is None
+            else context_schema_version
+        )
         collections = {
             "entities.json": _json_bytes(
                 CanonicalCollection[EntityRecord](
-                    schema_version="topo.context/0.1",
+                    schema_version=target_context_schema,
                     records=tuple(
                         sorted(
                             entities or validated.entities.records, key=lambda x: x.id
@@ -1785,7 +2674,7 @@ class EngineCore:
             ),
             "assertions.json": _json_bytes(
                 CanonicalCollection[AssertionRecord](
-                    schema_version="topo.context/0.1",
+                    schema_version=target_context_schema,
                     records=tuple(
                         sorted(
                             assertions or validated.assertions.records,
@@ -1796,7 +2685,7 @@ class EngineCore:
             ),
             "evidence.json": _json_bytes(
                 CanonicalCollection[EvidenceRecord](
-                    schema_version="topo.context/0.1",
+                    schema_version=target_context_schema,
                     records=tuple(
                         sorted(
                             evidence or validated.evidence.records, key=lambda x: x.id
@@ -1806,7 +2695,7 @@ class EngineCore:
             ),
             "proposals.json": _json_bytes(
                 CanonicalCollection[ProposalRecord](
-                    schema_version="topo.context/0.1",
+                    schema_version=target_context_schema,
                     records=tuple(
                         sorted(
                             proposals or validated.proposals.records, key=lambda x: x.id
@@ -1831,6 +2720,12 @@ class EngineCore:
                 "based_on": validated.manifest.generation_id,
                 "mutation_id": mutation_id,
                 "recorded_at": now,
+                "package_version": (
+                    validated.manifest.package_version
+                    if package_version is None
+                    else package_version
+                ),
+                "context_schema_version": target_context_schema,
                 "modules": (validated.manifest.modules if modules is None else modules),
                 "active_rule_packages": (
                     validated.manifest.active_rule_packages
@@ -1947,7 +2842,7 @@ class EngineCore:
         mutation_id = self._id_factory()
 
         entities = CanonicalCollection[EntityRecord](
-            schema_version="topo.context/0.1",
+            schema_version="topo.context/0.2",
             records=tuple(
                 sorted(
                     (
@@ -1975,7 +2870,7 @@ class EngineCore:
             ),
         )
         evidence = CanonicalCollection[EvidenceRecord](
-            schema_version="topo.context/0.1",
+            schema_version="topo.context/0.2",
             records=(
                 UserStatementEvidenceRecord(
                     id=evidence_id,
@@ -1986,7 +2881,7 @@ class EngineCore:
             ),
         )
         assertions = CanonicalCollection[AssertionRecord](
-            schema_version="topo.context/0.1",
+            schema_version="topo.context/0.2",
             records=(
                 AssertionRecord(
                     id=membership_id,
@@ -2004,7 +2899,7 @@ class EngineCore:
             ),
         )
         proposals = CanonicalCollection[ProposalRecord](
-            schema_version="topo.context/0.1",
+            schema_version="topo.context/0.2",
             records=(),
         )
         inventory_payload = _evidence_inventory_bytes(())
@@ -2023,8 +2918,8 @@ class EngineCore:
             context_id=context_id,
             generation_id=generation_id,
             based_on=None,
-            package_version="0.1",
-            context_schema_version="topo.context/0.1",
+            package_version="0.2",
+            context_schema_version="topo.context/0.2",
             mutation_id=mutation_id,
             recorded_at=now,
             modules=self._module_catalog.pins,

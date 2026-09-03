@@ -40,7 +40,7 @@ def _collection_schema(record_schema: JsonObject) -> JsonObject:
         "additionalProperties": False,
         "required": ["schema_version", "records"],
         "properties": {
-            "schema_version": {"const": "topo.context/0.1"},
+            "schema_version": {"enum": ["topo.context/0.1", "topo.context/0.2"]},
             "records": {"type": "array", "items": record_schema},
         },
     }
@@ -54,7 +54,18 @@ def _entity_schema() -> JsonObject:
         "properties": {
             "id": _uuid7(),
             "entity_type": {
-                "enum": ["context", "person", "household", "account", "transaction"]
+                "enum": [
+                    "context",
+                    "person",
+                    "household",
+                    "account",
+                    "transaction",
+                    "asset",
+                    "debt",
+                    "contract",
+                    "pension_entitlement",
+                    "goal",
+                ]
             },
             "module_id": {
                 "enum": [
@@ -62,6 +73,11 @@ def _entity_schema() -> JsonObject:
                     "domain.parties",
                     "domain.accounts",
                     "domain.cashflow",
+                    "domain.assets",
+                    "domain.debts",
+                    "domain.contracts",
+                    "domain.pensions",
+                    "domain.goals",
                 ]
             },
             "created_at": {"type": "string", "format": "date-time"},
@@ -255,7 +271,7 @@ def _proposal_schema() -> JsonObject:
         ],
         "properties": {
             "id": _uuid7(),
-            "proposal_type": {"const": "assertion"},
+            "proposal_type": {"enum": ["assertion", "entity"]},
             "producer": {
                 "type": "object",
                 "additionalProperties": False,
@@ -269,46 +285,87 @@ def _proposal_schema() -> JsonObject:
                 },
             },
             "proposed_assertion": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "subject_ref",
-                    "predicate",
-                    "valid_time",
-                    "knowledge_type",
-                    "module_data",
-                ],
-                "properties": {
-                    "subject_ref": _ref(),
-                    "predicate": {"type": "string", "minLength": 1},
-                    "object_ref": _ref(),
-                    "object_value": object_value,
-                    "valid_time": {
+                "oneOf": [
+                    {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["start", "end_exclusive"],
+                        "required": [
+                            "subject_ref",
+                            "predicate",
+                            "valid_time",
+                            "knowledge_type",
+                            "module_data",
+                        ],
                         "properties": {
-                            "start": {"type": "string", "format": "date"},
-                            "end_exclusive": {
-                                "type": ["string", "null"],
-                                "format": "date",
+                            "subject_ref": _ref(),
+                            "predicate": {"type": "string", "minLength": 1},
+                            "object_ref": _ref(),
+                            "object_value": object_value,
+                            "valid_time": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["start", "end_exclusive"],
+                                "properties": {
+                                    "start": {"type": "string", "format": "date"},
+                                    "end_exclusive": {
+                                        "type": ["string", "null"],
+                                        "format": "date",
+                                    },
+                                },
+                            },
+                            "knowledge_type": {"enum": ["inferred", "user_provided"]},
+                            "module_data": {"type": "object"},
+                        },
+                        "oneOf": [
+                            {
+                                "required": ["object_ref"],
+                                "not": {"required": ["object_value"]},
+                            },
+                            {
+                                "required": ["object_value"],
+                                "not": {"required": ["object_ref"]},
+                            },
+                        ],
+                    },
+                    {"type": "null"},
+                ],
+            },
+            "proposed_entity": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "entity_type", "module_id"],
+                        "properties": {
+                            "id": _uuid7(),
+                            "entity_type": {
+                                "enum": [
+                                    "person",
+                                    "account",
+                                    "asset",
+                                    "debt",
+                                    "contract",
+                                    "pension_entitlement",
+                                    "goal",
+                                ]
+                            },
+                            "module_id": {
+                                "enum": [
+                                    "domain.parties",
+                                    "domain.accounts",
+                                    "domain.assets",
+                                    "domain.debts",
+                                    "domain.contracts",
+                                    "domain.pensions",
+                                    "domain.goals",
+                                ]
                             },
                         },
                     },
-                    "knowledge_type": {"enum": ["inferred", "user_provided"]},
-                    "module_data": {"type": "object"},
-                },
-                "oneOf": [
-                    {
-                        "required": ["object_ref"],
-                        "not": {"required": ["object_value"]},
-                    },
-                    {
-                        "required": ["object_value"],
-                        "not": {"required": ["object_ref"]},
-                    },
+                    {"type": "null"},
                 ],
             },
+            "batch_id": {"oneOf": [_uuid7(), {"type": "null"}]},
             "evidence_refs": {"type": "array", "minItems": 1, "items": _ref()},
             "reason_ref": {"type": "string", "minLength": 1},
             "detection": {
@@ -372,6 +429,19 @@ def _proposal_schema() -> JsonObject:
                 ]
             },
         },
+        "allOf": [
+            {
+                "if": {"properties": {"proposal_type": {"const": "assertion"}}},
+                "then": {
+                    "required": ["proposed_assertion"],
+                    "properties": {"proposed_entity": {"type": "null"}},
+                },
+                "else": {
+                    "required": ["proposed_entity"],
+                    "properties": {"proposed_assertion": {"type": "null"}},
+                },
+            }
+        ],
     }
 
 
@@ -404,8 +474,8 @@ MANIFEST_SCHEMA = {
         "context_id": _uuid7(),
         "generation_id": _uuid7(),
         "based_on": {"oneOf": [_uuid7(), {"type": "null"}]},
-        "package_version": {"const": "0.1"},
-        "context_schema_version": {"const": "topo.context/0.1"},
+        "package_version": {"enum": ["0.1", "0.2"]},
+        "context_schema_version": {"enum": ["topo.context/0.1", "topo.context/0.2"]},
         "mutation_id": _uuid7(),
         "recorded_at": {"type": "string", "format": "date-time"},
         "modules": {
@@ -574,6 +644,38 @@ def _validate_snapshot(
 
     if manifest.generation_id != snapshot.current_generation:
         raise PackageIntegrityError("CURRENT does not match the manifest generation")
+    collection_versions = {
+        entities.schema_version,
+        assertions.schema_version,
+        evidence.schema_version,
+        proposals.schema_version,
+    }
+    if collection_versions != {manifest.context_schema_version}:
+        raise PackageIntegrityError("collection schema versions do not match manifest")
+    if (
+        manifest.package_version == "0.1"
+        and manifest.context_schema_version != "topo.context/0.1"
+    ):
+        raise PackageIntegrityError("package 0.1 requires context schema 0.1")
+    if (
+        manifest.package_version == "0.2"
+        and manifest.context_schema_version != "topo.context/0.2"
+    ):
+        raise PackageIntegrityError("package 0.2 requires context schema 0.2")
+    if manifest.context_schema_version == "topo.context/0.1" and (
+        any(
+            entity.entity_type
+            in {"asset", "debt", "contract", "pension_entitlement", "goal"}
+            for entity in entities.records
+        )
+        or any(
+            proposal.proposal_type != "assertion"
+            or proposal.batch_id is not None
+            or proposal.proposed_entity is not None
+            for proposal in proposals.records
+        )
+    ):
+        raise PackageIntegrityError("context 0.1 contains 0.2 records")
 
     entity_ids = {record.id for record in entities.records}
     entity_by_id = {record.id: record for record in entities.records}
@@ -765,6 +867,8 @@ def _validate_snapshot(
             classification_proposals = tuple(
                 proposal
                 for proposal in proposals.records
+                if proposal.proposal_type == "assertion"
+                and proposal.proposed_assertion is not None
                 if proposal.producer.producer_type == "source_adapter"
                 and proposal.proposed_assertion.predicate
                 == "domain.cashflow/source_classification"
@@ -783,6 +887,10 @@ def _validate_snapshot(
             else:
                 proposal = classification_proposals[0]
                 proposed = proposal.proposed_assertion
+                if proposed is None:
+                    raise PackageIntegrityError(
+                        "source classification proposal is not an assertion"
+                    )
                 if (
                     proposal.producer.producer_id != record.source.adapter_id
                     or proposal.producer.producer_version
@@ -817,14 +925,36 @@ def _validate_snapshot(
                     "source assertion lineage does not match evidence lineage"
                 )
 
+    proposed_entities = {
+        proposal.proposed_entity.id: proposal
+        for proposal in proposals.records
+        if proposal.proposal_type == "entity" and proposal.proposed_entity is not None
+    }
+    if len(proposed_entities) != sum(
+        proposal.proposal_type == "entity" for proposal in proposals.records
+    ):
+        raise PackageIntegrityError("proposed entity identities must be unique")
+    for entity_id, proposal in proposed_entities.items():
+        if proposal.status == "open" and entity_id in entity_ids:
+            raise PackageIntegrityError("open proposed entity already exists")
+        if proposal.status == "confirmed" and entity_id not in entity_ids:
+            raise PackageIntegrityError("confirmed proposed entity does not exist")
     for proposal in proposals.records:
-        if proposal.proposed_assertion.subject_ref.ref_type != "entity":
+        if proposal.proposal_type == "entity":
+            if proposal.proposed_entity is None:
+                raise PackageIntegrityError("entity proposal has no entity")
+            continue
+        proposed = proposal.proposed_assertion
+        if proposed is None:
+            raise PackageIntegrityError("assertion proposal has no assertion")
+        if proposed.subject_ref.ref_type != "entity":
             raise PackageIntegrityError("proposal subject has an invalid ref type")
-        if proposal.proposed_assertion.subject_ref.id not in entity_ids:
+        if proposed.subject_ref.id not in entity_ids | set(proposed_entities):
             raise PackageIntegrityError("proposal subject does not resolve")
-        object_ref = proposal.proposed_assertion.object_ref
+        object_ref = proposed.object_ref
         if object_ref is not None and (
-            object_ref.ref_type != "entity" or object_ref.id not in entity_ids
+            object_ref.ref_type != "entity"
+            or object_ref.id not in entity_ids | set(proposed_entities)
         ):
             raise PackageIntegrityError("proposal object does not resolve")
         if any(
@@ -842,36 +972,51 @@ def _validate_snapshot(
             "household": "domain.parties",
             "account": "domain.accounts",
             "transaction": "domain.cashflow",
+            "asset": "domain.assets",
+            "debt": "domain.debts",
+            "contract": "domain.contracts",
+            "pension_entitlement": "domain.pensions",
+            "goal": "domain.goals",
         }[entity.entity_type]
         if entity.module_id != expected_module:
             raise PackageIntegrityError("entity type has an invalid owning module")
-    for entity_type in ("context", "person", "household"):
+    for entity_type in ("context", "household"):
         if len(entities_by_type.get(entity_type, [])) != 1:
             raise PackageIntegrityError(
                 f"initial generation must contain one {entity_type} entity"
             )
+    if not entities_by_type.get("person"):
+        raise PackageIntegrityError("context must contain at least one person entity")
 
     context = entities_by_type["context"][0]
-    person = entities_by_type["person"][0]
+    initial_person_id = str(journal.entries[0].result.get("person_id", ""))
+    person = entity_by_id.get(initial_person_id)
+    if person is None or person.entity_type != "person":
+        raise PackageIntegrityError("initial person does not resolve")
     household = entities_by_type["household"][0]
     memberships = [
         assertion
         for assertion in assertions.records
         if assertion.predicate == "domain.parties/household_membership"
     ]
-    if len(memberships) != 1:
-        raise PackageIntegrityError(
-            "initial generation must contain one household membership"
-        )
-    membership = memberships[0]
-    if (
-        membership.subject_ref.id != person.id
+    if not memberships:
+        raise PackageIntegrityError("context must contain a household membership")
+    if any(
+        membership.subject_ref.id
+        not in {entity.id for entity in entities_by_type["person"]}
         or membership.object_ref is None
         or membership.object_ref.id != household.id
+        for membership in memberships
     ):
         raise PackageIntegrityError(
-            "household membership does not join the initial actors"
+            "household membership does not join a person to the household"
         )
+    membership_id = str(journal.entries[0].result.get("membership_assertion_id", ""))
+    membership = next(
+        (candidate for candidate in memberships if candidate.id == membership_id), None
+    )
+    if membership is None or membership.subject_ref.id != person.id:
+        raise PackageIntegrityError("initial household membership does not resolve")
     if context.id != manifest.context_id:
         raise PackageIntegrityError("context entity does not match the manifest")
 

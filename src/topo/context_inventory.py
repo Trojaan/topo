@@ -7,16 +7,20 @@ from dataclasses import dataclass
 from datetime import date
 from typing import cast
 
+from pydantic import JsonValue
+
 from topo.canonical_validation import ValidatedPackage
 from topo.identifiers import source_account_id
 from topo.models import (
     AssertionRecord,
     ContextInventoryAnalyzeRunRequest,
     JsonObject,
+    NetWorthAnalyzeRunRequest,
     ProposalRecord,
     SourceRecordEvidenceRecord,
     WorkflowNextRequest,
 )
+from topo.net_worth import analyze_net_worth
 
 _COUNTED_DOMAINS = (
     "domain.accounts",
@@ -24,6 +28,38 @@ _COUNTED_DOMAINS = (
     "domain.cashflow",
     "domain.debts",
 )
+
+_BASIS_SECTIONS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    ("household", "domain.parties", ("person",), "domain.parties/inventory_coverage"),
+    ("accounts", "domain.accounts", ("account",), "domain.accounts/inventory_coverage"),
+    ("cashflow", "domain.cashflow", (), "domain.cashflow/inventory_coverage"),
+    ("assets", "domain.assets", ("asset",), "domain.assets/inventory_coverage"),
+    ("debts", "domain.debts", ("debt",), "domain.debts/inventory_coverage"),
+    (
+        "pensions",
+        "domain.pensions",
+        ("pension_entitlement",),
+        "domain.pensions/inventory_coverage",
+    ),
+    (
+        "contracts_insurance",
+        "domain.contracts",
+        ("contract",),
+        "domain.contracts/inventory_coverage",
+    ),
+    ("goals", "domain.goals", ("goal",), "domain.goals/inventory_coverage"),
+)
+
+_SECTION_QUESTIONS = {
+    "household": "Welke personen horen bij dit huishouden, en is deze lijst compleet?",
+    "accounts": "Welke betaal-, spaar- en beleggingsrekeningen horen bij dit huishouden, en is deze lijst compleet?",
+    "cashflow": "Welke terugkerende inkomsten en uitgaven heeft dit huishouden, en is deze lijst compleet?",
+    "assets": "Welke bezittingen horen bij dit huishouden, wat zijn hun actuele waarden, en is deze lijst compleet?",
+    "debts": "Welke schulden horen bij dit huishouden, wat zijn hun actuele standen, en is deze lijst compleet?",
+    "pensions": "Welke pensioenaanspraken zijn er, welke waarde is bekend, en is deze lijst compleet?",
+    "contracts_insurance": "Welke relevante contracten en verzekeringen zijn er, en is deze lijst compleet?",
+    "goals": "Welke financiële doelen zijn er, en is deze lijst compleet?",
+}
 
 
 @dataclass(frozen=True)
@@ -365,6 +401,25 @@ def _requirement_state(
         in _scope_subject_ids(package, request, requirement)
     )
     if not assertions:
+        coverage_predicate = {
+            "account_balances": "domain.accounts/inventory_coverage",
+            "asset_valuations": "domain.assets/inventory_coverage",
+            "debt_balances": "domain.debts/inventory_coverage",
+        }.get(requirement.name)
+        explicitly_complete = any(
+            assertion.subject_ref.id == request.analysis_scope.entity_id
+            and assertion.predicate == coverage_predicate
+            and assertion.object_value is not None
+            and assertion.object_value.value_type == "inventory_coverage"
+            and isinstance(assertion.object_value.value, dict)
+            and assertion.object_value.value.get("coverage") == "complete"
+            and assertion.object_value.value.get("as_of_date")
+            == request.as_of_date.isoformat()
+            and _active_on(assertion, request.as_of_date)
+            for assertion in package.assertions.records
+        )
+        if explicitly_complete:
+            return "present", assertions
         return "missing", assertions
     values_by_subject: dict[str, set[str]] = {}
     for assertion in assertions:
@@ -398,7 +453,9 @@ def _matching_proposals(
     return tuple(
         proposal
         for proposal in package.proposals.records
-        if proposal.proposed_assertion.predicate in requirement.predicates
+        if proposal.proposal_type == "assertion"
+        and proposal.proposed_assertion is not None
+        and proposal.proposed_assertion.predicate in requirement.predicates
         and proposal.proposed_assertion.subject_ref.id in subject_ids
         and proposal.proposed_assertion.valid_time.start <= request.as_of_date
         and (
@@ -445,6 +502,7 @@ def _net_worth_requirements(
                         | {
                             proposal.proposed_assertion.knowledge_type
                             for proposal in proposals
+                            if proposal.proposed_assertion is not None
                         }
                     ),
                     "verification_statuses": sorted(
@@ -458,6 +516,7 @@ def _net_worth_requirements(
                     + [
                         proposal.proposed_assertion.valid_time.model_dump(mode="json")
                         for proposal in proposals
+                        if proposal.proposed_assertion is not None
                     ],
                     "recorded_times": [
                         assertion.recorded_at.isoformat() for assertion in matched
@@ -694,9 +753,443 @@ def inventory_context(
     )
 
 
+def _current_assertions(
+    package: ValidatedPackage, as_of_date: date
+) -> tuple[AssertionRecord, ...]:
+    superseded = {
+        assertion.supersedes
+        for assertion in package.assertions.records
+        if assertion.supersedes is not None
+    }
+    return tuple(
+        assertion
+        for assertion in package.assertions.records
+        if assertion.id not in superseded
+        and assertion.verification_status == "confirmed"
+        and _active_on(assertion, as_of_date)
+    )
+
+
+def _value(assertion: AssertionRecord) -> JsonObject | None:
+    if assertion.object_value is None:
+        return None
+    return cast(JsonObject, assertion.object_value.model_dump(mode="json"))
+
+
+def _context_sections(
+    package: ValidatedPackage, request: WorkflowNextRequest
+) -> list[JsonObject]:
+    active = _current_assertions(package, request.as_of_date)
+    labels = {
+        assertion.subject_ref.id: assertion.object_value.value
+        for assertion in active
+        if assertion.predicate == "topo.core/label"
+        and assertion.object_value is not None
+        and isinstance(assertion.object_value.value, str)
+    }
+    sections: list[JsonObject] = []
+    for section_id, module_id, entity_types, coverage_predicate in _BASIS_SECTIONS:
+        entities = tuple(
+            entity
+            for entity in package.entities.records
+            if entity.entity_type in entity_types
+        )
+        item_results: list[JsonObject] = []
+        for entity in entities:
+            facts = [
+                {
+                    "predicate": assertion.predicate,
+                    "object_ref": (
+                        assertion.object_ref.model_dump(mode="json")
+                        if assertion.object_ref is not None
+                        else None
+                    ),
+                    "object_value": _value(assertion),
+                    "valid_time": assertion.valid_time.model_dump(mode="json"),
+                    "assertion_ref": {"ref_type": "assertion", "id": assertion.id},
+                }
+                for assertion in active
+                if assertion.subject_ref.id == entity.id
+            ]
+            item_results.append(
+                cast(
+                    JsonObject,
+                    {
+                        "item_id": entity.id,
+                        "item_type": entity.entity_type,
+                        "label": str(labels.get(entity.id, entity.id)),
+                        "entity_ref": {"ref_type": "entity", "id": entity.id},
+                        "facts": facts,
+                    },
+                )
+            )
+        if section_id == "cashflow":
+            for assertion in active:
+                if assertion.predicate != "domain.cashflow/recurring_cashflow":
+                    continue
+                item_results.append(
+                    {
+                        "item_id": assertion.id,
+                        "item_type": "recurring_cashflow",
+                        "label": assertion.predicate,
+                        "entity_ref": None,
+                        "facts": [
+                            {
+                                "predicate": assertion.predicate,
+                                "object_ref": None,
+                                "object_value": _value(assertion),
+                                "valid_time": assertion.valid_time.model_dump(
+                                    mode="json"
+                                ),
+                                "assertion_ref": {
+                                    "ref_type": "assertion",
+                                    "id": assertion.id,
+                                },
+                            }
+                        ],
+                    }
+                )
+        coverage_assertion = next(
+            (
+                assertion
+                for assertion in active
+                if assertion.subject_ref.id == request.analysis_scope.entity_id
+                and assertion.predicate == coverage_predicate
+                and assertion.object_value is not None
+                and isinstance(assertion.object_value.value, dict)
+                and assertion.object_value.value.get("as_of_date")
+                == request.as_of_date.isoformat()
+            ),
+            None,
+        )
+        coverage = "unknown"
+        coverage_ref: JsonObject | None = None
+        if (
+            coverage_assertion is not None
+            and coverage_assertion.object_value is not None
+        ):
+            raw_coverage = coverage_assertion.object_value.value
+            assert isinstance(raw_coverage, dict)
+            coverage = str(raw_coverage.get("coverage", "unknown"))
+            coverage_ref = {"ref_type": "assertion", "id": coverage_assertion.id}
+        open_proposals = [
+            {
+                "proposal_ref": {"ref_type": "proposal", "id": proposal.id},
+                "proposal_type": proposal.proposal_type,
+                "batch_id": proposal.batch_id,
+            }
+            for proposal in package.proposals.records
+            if proposal.status == "open"
+            and (
+                (
+                    proposal.proposed_entity is not None
+                    and proposal.proposed_entity.module_id == module_id
+                )
+                or (
+                    proposal.proposed_assertion is not None
+                    and (
+                        proposal.proposed_assertion.predicate.startswith(
+                            f"{module_id}/"
+                        )
+                        or proposal.proposed_assertion.predicate == "topo.core/label"
+                        and proposal.proposed_assertion.subject_ref.id
+                        in {entity.id for entity in entities}
+                    )
+                )
+            )
+        ]
+        detail_state = "present"
+        if coverage == "complete" and item_results:
+            required_predicates = {
+                "accounts": {"topo.core/label", "domain.accounts/balance"},
+                "assets": {"topo.core/label", "domain.assets/value"},
+                "debts": {"topo.core/label", "domain.debts/balance"},
+                "pensions": {"topo.core/label"},
+                "contracts_insurance": {"topo.core/label"},
+                "goals": {"topo.core/label", "domain.goals/definition"},
+            }.get(section_id, set())
+            for item in item_results:
+                predicates = {
+                    str(fact["predicate"])
+                    for fact in cast(list[JsonObject], item["facts"])
+                }
+                item_type = str(item["item_type"])
+                requires_classification = item_type in {
+                    "account",
+                    "asset",
+                    "debt",
+                    "contract",
+                }
+                has_classification = any(
+                    predicate.startswith(f"{module_id}/classification/")
+                    for predicate in predicates
+                )
+                allocation_predicate = {
+                    "account": "domain.parties/account_holder",
+                    "asset": "domain.parties/ownership",
+                    "debt": "domain.parties/debtor",
+                    "pension_entitlement": "domain.parties/beneficiary",
+                }.get(item_type)
+                has_allocation = allocation_predicate is None or bool(
+                    {
+                        allocation_predicate,
+                        "domain.parties/household_allocation",
+                    }
+                    & predicates
+                )
+                if (
+                    not required_predicates <= predicates
+                    or requires_classification
+                    and not has_classification
+                    or not has_allocation
+                ):
+                    detail_state = "missing"
+                    break
+        sections.append(
+            cast(
+                JsonObject,
+                {
+                    "section_id": section_id,
+                    "coverage": coverage,
+                    "coverage_ref": coverage_ref,
+                    "confirmed_items": item_results,
+                    "open_proposals": open_proposals,
+                    "requirements": [
+                        {
+                            "requirement": "inventory_coverage",
+                            "state": "present" if coverage == "complete" else "missing",
+                        },
+                        {"requirement": "minimum_item_details", "state": detail_state},
+                    ],
+                },
+            )
+        )
+    return sections
+
+
+def _change_summary(
+    package: ValidatedPackage, since_generation: str | None
+) -> JsonObject:
+    empty: JsonObject = {
+        "since_generation": since_generation,
+        "available": since_generation is None,
+        "confirmed": [],
+        "proposed": [],
+        "replaced": [],
+        "rejected": [],
+    }
+    if since_generation is None:
+        return empty
+    index = next(
+        (
+            position
+            for position, entry in enumerate(package.journal.entries)
+            if entry.generation_after == since_generation
+        ),
+        None,
+    )
+    if index is None:
+        return empty
+    empty["available"] = True
+    for entry in package.journal.entries[index + 1 :]:
+        item: JsonObject = {
+            "operation": entry.operation,
+            "generation_id": entry.generation_after,
+            "recorded_at": entry.recorded_at.isoformat(),
+            "result": entry.result,
+        }
+        if entry.operation in {"proposal.submit", "workflow.respond"}:
+            cast(list[JsonObject], empty["proposed"]).append(item)
+        elif entry.operation in {"proposal.confirm", "proposal.confirm-batch"}:
+            cast(list[JsonObject], empty["confirmed"]).append(item)
+        elif entry.operation == "proposal.correct":
+            cast(list[JsonObject], empty["replaced"]).append(item)
+        elif entry.operation in {"proposal.reject", "proposal.reject-batch"}:
+            cast(list[JsonObject], empty["rejected"]).append(item)
+    return empty
+
+
+def _context_action(
+    package: ValidatedPackage,
+    request: WorkflowNextRequest,
+    section: JsonObject,
+) -> JsonObject:
+    section_id = str(section["section_id"])
+    action_id = _stable_uuid7(
+        package.manifest.generation_id,
+        request.analysis_scope.entity_id,
+        request.as_of_date.isoformat(),
+        "basis_context",
+        section_id,
+    )
+    items = [
+        {
+            "item_id": item["item_id"],
+            "label": item["label"],
+            "entity_ref": item["entity_ref"],
+            "entity_type": item["item_type"],
+        }
+        for item in cast(list[JsonObject], section["confirmed_items"])
+        if item["item_type"] != "recurring_cashflow"
+    ]
+    template: JsonObject = {
+        "contract_version": request.contract_version,
+        "operation_id": action_id,
+        "context_id": request.context_id,
+        "expected_generation": package.manifest.generation_id,
+        "actor": {"actor_type": "agent", "actor_id": None},
+        "reason": f"Answer basis-context action {action_id}",
+        "workflow_response": {
+            "action_id": action_id,
+            "response_type": "context_inventory",
+            "section_id": section_id,
+            "analysis_scope": request.analysis_scope.model_dump(mode="json"),
+            "as_of_date": request.as_of_date.isoformat(),
+            "producer": {
+                "producer_type": "agent",
+                "producer_id": None,
+                "producer_version": None,
+            },
+            "coverage": "complete",
+            "items": cast(JsonValue, items),
+        },
+    }
+    return {
+        "action_id": action_id,
+        "action_type": "answer_context_inventory",
+        "action_contract_version": "topo.workflow-action/0.3",
+        "priority": "required",
+        "reason_code": f"BASIS_CONTEXT_NEEDS_{section_id.upper()}",
+        "affected_component": f"basis_context/{section_id}",
+        "related_refs": [],
+        "command": "workflow.respond",
+        "question": _SECTION_QUESTIONS[section_id],
+        "available_context": {"section": section},
+        "request_template": template,
+        "user_input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["coverage", "items"],
+            "properties": {
+                "coverage": {"enum": ["partial", "complete"]},
+                "items": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+        "user_input_paths": [
+            "/workflow_response/coverage",
+            "/workflow_response/items",
+        ],
+        "agent_input_paths": [
+            "/actor/actor_id",
+            "/workflow_response/producer/producer_id",
+            "/workflow_response/producer/producer_version",
+        ],
+        "input_schema_ref": "topo://schema/workflow-respond-request/0.2",
+        "requires_user_input": True,
+        "requires_authorization": False,
+    }
+
+
+def _batch_action(
+    package: ValidatedPackage, request: WorkflowNextRequest, batch_id: str
+) -> JsonObject:
+    action_id = _stable_uuid7(
+        package.manifest.generation_id, batch_id, "prepare_batch_authorization"
+    )
+    return {
+        "action_id": action_id,
+        "action_type": "prepare_authorization",
+        "action_contract_version": "topo.workflow-action/0.3",
+        "priority": "blocking",
+        "reason_code": "PROPOSAL_BATCH_REQUIRES_AUTHORIZATION",
+        "affected_component": None,
+        "related_refs": [
+            {"ref_type": "proposal", "id": proposal.id}
+            for proposal in package.proposals.records
+            if proposal.status == "open" and proposal.batch_id == batch_id
+        ],
+        "command": "proposal.confirm-batch",
+        "question": "Controleer en autoriseer de voorgestelde contextwijzigingen.",
+        "available_context": {"batch_id": batch_id},
+        "request_template": {
+            "contract_version": request.contract_version,
+            "operation_id": action_id,
+            "context_id": request.context_id,
+            "expected_generation": package.manifest.generation_id,
+            "actor": {"actor_type": "agent", "actor_id": None},
+            "reason": f"Prepare proposal batch {batch_id}",
+            "batch_id": batch_id,
+            "authorization": None,
+        },
+        "user_input_schema": {"type": "object", "additionalProperties": False},
+        "user_input_paths": [],
+        "agent_input_paths": ["/actor/actor_id"],
+        "input_schema_ref": "topo://schema/proposal-confirm-batch-request/0.2",
+        "requires_user_input": False,
+        "requires_authorization": False,
+    }
+
+
 def next_workflow_action(
     package: ValidatedPackage, request: WorkflowNextRequest
 ) -> JsonObject:
+    sections = _context_sections(package, request)
+    if package.manifest.context_schema_version == "topo.context/0.1":
+        from topo.builtin_modules import default_module_catalog
+
+        action_id = _stable_uuid7(
+            package.manifest.generation_id, "migrate", "topo.context/0.2"
+        )
+        migration_action: JsonObject = {
+            "action_id": action_id,
+            "action_type": "prepare_authorization",
+            "action_contract_version": "topo.workflow-action/0.3",
+            "priority": "blocking",
+            "reason_code": "CONTEXT_MIGRATION_REQUIRED",
+            "affected_component": None,
+            "related_refs": [
+                {"ref_type": "generation", "id": package.manifest.generation_id}
+            ],
+            "command": "context.migrate",
+            "question": "Autoriseer de migratie van deze context naar topo.context/0.2.",
+            "available_context": {},
+            "request_template": {
+                "contract_version": request.contract_version,
+                "operation_id": action_id,
+                "context_id": request.context_id,
+                "expected_generation": package.manifest.generation_id,
+                "actor": {"actor_type": "agent", "actor_id": None},
+                "reason": "Migrate context for proactive workflow",
+                "target_package_version": "0.2",
+                "target_context_schema_version": "topo.context/0.2",
+                "target_module_versions": {
+                    pin.module_id: pin.module_version
+                    for pin in default_module_catalog().pins
+                },
+                "authorization": None,
+            },
+            "user_input_schema": {"type": "object", "additionalProperties": False},
+            "user_input_paths": [],
+            "agent_input_paths": ["/actor/actor_id"],
+            "input_schema_ref": "topo://schema/context-migrate-request/0.1",
+            "requires_user_input": False,
+            "requires_authorization": False,
+        }
+        return cast(
+            JsonObject,
+            {
+                "workflow_contract_version": request.workflow_contract_version,
+                "scope": request.analysis_scope.model_dump(mode="json"),
+                "as_of_date": request.as_of_date.isoformat(),
+                "used_generation": package.manifest.generation_id,
+                "change_summary": _change_summary(package, request.since_generation),
+                "context_sections": sections,
+                "analysis_results": [],
+                "next_action": migration_action,
+                "actions": [migration_action],
+            },
+        )
+
     analysis_request = ContextInventoryAnalyzeRunRequest(
         contract_version=request.contract_version,
         analysis_id="analysis.context_inventory",
@@ -708,34 +1201,99 @@ def next_workflow_action(
         reporting_currency=None,
         scenario=None,
     )
-    inventory_context(package, analysis_request)
+    inventory_result = inventory_context(package, analysis_request)
     requirements, _ = _net_worth_requirements(package, analysis_request)
     decision = _next_requirement_decision(requirements, request.as_of_date.isoformat())
-    if decision is None:
-        return {"actions": []}
+    net_worth_request = NetWorthAnalyzeRunRequest(
+        contract_version=request.contract_version,
+        analysis_id="analysis.net_worth",
+        analysis_contract_version="0.1",
+        context_id=request.context_id,
+        analysis_scope=request.analysis_scope,
+        as_of_date=request.as_of_date,
+        period=None,
+        reporting_currency=request.reporting_currency,
+        scenario=None,
+    )
+    inventory_result["status"] = (
+        "complete"
+        if all(
+            section["coverage"] == "complete"
+            and all(
+                requirement["state"] == "present"
+                for requirement in cast(list[JsonObject], section["requirements"])
+            )
+            for section in sections
+        )
+        else "provisional"
+    )
+    net_worth_result = analyze_net_worth(package, net_worth_request)
+    incomplete_requirements = [
+        requirement for requirement in requirements if requirement["state"] != "present"
+    ]
+    net_worth_components = cast(list[JsonObject], net_worth_result["components"])
+    net_worth_total = next(
+        component
+        for component in net_worth_components
+        if component["component_id"] == "net_worth/total"
+    )
+    if incomplete_requirements and net_worth_total["status"] == "complete":
+        net_worth_total["status"] = "provisional"
+    net_worth_result["status"] = (
+        "unavailable"
+        if net_worth_total["status"] == "unavailable"
+        else "provisional"
+        if incomplete_requirements or net_worth_total["status"] == "provisional"
+        else "complete"
+    )
+    net_worth_result["workflow_requirements"] = cast(JsonValue, incomplete_requirements)
+    analysis_results: list[JsonObject] = [inventory_result, net_worth_result]
+    batch_id = next(
+        (
+            proposal.batch_id
+            for proposal in package.proposals.records
+            if proposal.status == "open" and proposal.batch_id is not None
+        ),
+        None,
+    )
+    action: JsonObject | None = None
+    if batch_id is not None:
+        action = _batch_action(package, request, batch_id)
 
     component_id = "analysis.net_worth/total"
     accounts = _known_source_accounts(package)
     if (
-        decision.requirement == "account_balances"
+        action is None
+        and decision is not None
+        and decision.requirement == "account_balances"
         and decision.state == "missing"
         and accounts
     ):
-        return {
-            "actions": [
-                _account_balance_action(
-                    package,
-                    request,
-                    decision,
-                    component_id=component_id,
-                    accounts=accounts,
-                )
-            ]
-        }
-    return cast(
-        JsonObject,
-        {
-            "actions": [
+        action = _account_balance_action(
+            package,
+            request,
+            decision,
+            component_id=component_id,
+            accounts=accounts,
+        )
+    elif action is None and decision is not None:
+        target_section = {
+            "account_balances": "accounts",
+            "asset_valuations": "assets",
+            "debt_balances": "debts",
+        }.get(decision.requirement)
+        if (
+            request.include_basis_context
+            and decision.state == "missing"
+            and target_section is not None
+        ):
+            section = next(
+                item for item in sections if item["section_id"] == target_section
+            )
+            action = _context_action(package, request, section)
+        else:
+            action = cast(
+                JsonObject,
                 {
                     "action_id": _stable_uuid7(
                         package.manifest.generation_id,
@@ -755,7 +1313,32 @@ def next_workflow_action(
                     "input_schema_ref": "topo://schema/proposal-submit-request/0.1",
                     "requires_user_input": True,
                     "requires_authorization": False,
-                }
-            ]
+                },
+            )
+    if action is None and request.include_basis_context:
+        incomplete_sections = [
+            item
+            for item in sections
+            if item["coverage"] != "complete"
+            or any(
+                requirement["state"] != "present"
+                for requirement in cast(list[JsonObject], item["requirements"])
+            )
+        ]
+        candidate_section = incomplete_sections[0] if incomplete_sections else None
+        if candidate_section is not None:
+            action = _context_action(package, request, candidate_section)
+    return cast(
+        JsonObject,
+        {
+            "workflow_contract_version": request.workflow_contract_version,
+            "scope": request.analysis_scope.model_dump(mode="json"),
+            "as_of_date": request.as_of_date.isoformat(),
+            "used_generation": package.manifest.generation_id,
+            "change_summary": _change_summary(package, request.since_generation),
+            "context_sections": sections,
+            "analysis_results": analysis_results,
+            "next_action": action,
+            "actions": [] if action is None else [action],
         },
     )

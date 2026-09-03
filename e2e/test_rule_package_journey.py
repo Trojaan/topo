@@ -13,7 +13,7 @@ RULE_PACKAGE = """
 package_id: domain.cashflow.default-rules
 package_version: 0.1.0
 module_id: domain.cashflow
-module_version: 0.1.0
+module_version: 0.2.0
 rules:
   - rule_id: cashflow.salary-monthly
     rule_version: 0.1.0
@@ -137,7 +137,7 @@ def test_rule_package_validation_preview_and_authorized_activation_are_safe(
             "package_id": "domain.cashflow.default-rules",
             "package_version": "0.1.0",
             "module_id": "domain.cashflow",
-            "module_version": "0.1.0",
+            "module_version": "0.2.0",
             "checksum": activated["result"]["checksum"],
             "artifact": "rule-package.domain.cashflow.json",
         }

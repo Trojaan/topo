@@ -88,12 +88,12 @@ def module_checksum(
 def module_descriptor(
     module_id: str,
     *,
+    module_version: str = "0.2.0",
     dependencies: tuple[ModuleDependency, ...] = (),
     capabilities: tuple[str, ...] = ("classifications",),
     public_identifiers: tuple[str, ...] = (),
     constraints: tuple[ModuleConstraint, ...] = (),
 ) -> ModuleDescriptor:
-    module_version = "0.1.0"
     checksum = module_checksum(
         module_id=module_id,
         module_version=module_version,

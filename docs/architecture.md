@@ -85,6 +85,18 @@ package pin atomically. Later mutations carry active rule artifacts forward.
 Source imports derive one stable local account entity from the adapter and literal
 source-account identity. The literal posting remains preserved in evidence; the
 entity is the subject for separately confirmed allocation and coverage assertions.
+When exactly one unlinked manual account can collide with one new source account,
+the import preview exposes a `merge_external_account_identity` effect. Only the
+checksum-bound human authorization confirms that identity and imports the source
+records atomically. A previously confirmed external identity always wins on later
+imports; the engine never merges multiple candidates by guesswork.
+
+`context_inventory.py` owns the effect-free `workflow.next` decision module. It
+reads only a validated immutable generation, composes domain inventory projections
+with active analyses, and returns one closed action type. It never publishes.
+`EngineCore` alone translates `workflow.respond` into proposals and confirms or
+rejects a complete batch atomically. The CLI and managed agent instructions only
+localize and render the engine's already-decided result.
 
 ## Context lifecycle
 
@@ -93,6 +105,11 @@ builds and validates a complete successor generation before publication; unknown
 package or context-schema versions return a rejected mutation without changing
 `CURRENT`. `context restore` validates a retained generation and copies its state
 into a new generation whose `based_on` remains the generation that was current.
+
+Packages using `topo.context/0.1` remain readable. A proactive workflow on such a
+package returns only an executable migration-preview action. The authorized
+migration publishes `topo.context/0.2`, preserves identifiers and journal history,
+and does not infer inventory coverage.
 
 `context compact` publishes a value-free retention decision before pruning. Its
 bounded `retain_latest` value counts the new compact generation, while explicit

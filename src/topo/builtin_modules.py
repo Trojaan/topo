@@ -11,6 +11,9 @@ from topo.models import (
     AssertionRecord,
     EntityRecord,
     ExchangeRateValue,
+    ExternalIdentityValue,
+    GoalDefinitionValue,
+    InventoryCoverageValue,
     Money,
     ProposedAssertion,
     RecurringCashflowValue,
@@ -54,6 +57,91 @@ def _validate_distribution(
             "INVALID_COMPLETE_DISTRIBUTION",
             "/proposal/proposed_assertion/module_data/distribution/shares",
             "an explicitly complete distribution must contain shares totaling 1",
+        )
+
+
+def _validate_inventory_coverage(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    del existing
+    if not assertion.predicate.endswith("/inventory_coverage"):
+        return
+    scope = next(
+        (entity for entity in entities if entity.id == assertion.subject_ref.id), None
+    )
+    if scope is None or scope.entity_type not in {"person", "household"}:
+        raise ProposalDecisionError(
+            "INVALID_INVENTORY_COVERAGE_SCOPE",
+            "/proposal/proposed_assertion/subject_ref",
+            "inventory coverage must belong to a person or household",
+        )
+    _validate_typed_value(
+        assertion,
+        value_type="inventory_coverage",
+        model=InventoryCoverageValue,
+        code="INVALID_INVENTORY_COVERAGE",
+    )
+
+
+def _validate_typed_value(
+    assertion: ProposedAssertion,
+    *,
+    value_type: str,
+    model: type[InventoryCoverageValue | ExternalIdentityValue | GoalDefinitionValue],
+    code: str,
+) -> None:
+    if (
+        assertion.object_value is None
+        or assertion.object_value.value_type != value_type
+    ):
+        raise ProposalDecisionError(
+            code,
+            "/proposal/proposed_assertion/object_value",
+            f"{assertion.predicate} requires a typed {value_type} value",
+        )
+    try:
+        model.model_validate_json(json.dumps(assertion.object_value.value), strict=True)
+    except ValidationError as error:
+        raise ProposalDecisionError(
+            code,
+            "/proposal/proposed_assertion/object_value/value",
+            str(error),
+        ) from error
+
+
+def _validate_context_value_shapes(
+    assertion: ProposedAssertion,
+    existing: tuple[AssertionRecord, ...],
+    entities: tuple[EntityRecord, ...],
+) -> None:
+    if assertion.predicate.endswith("/inventory_coverage"):
+        _validate_inventory_coverage(assertion, existing, entities)
+    elif assertion.predicate == "domain.accounts/external_identity":
+        _validate_typed_value(
+            assertion,
+            value_type="external_identity",
+            model=ExternalIdentityValue,
+            code="INVALID_EXTERNAL_IDENTITY",
+        )
+    elif assertion.predicate == "domain.goals/definition":
+        _validate_typed_value(
+            assertion,
+            value_type="goal_definition",
+            model=GoalDefinitionValue,
+            code="INVALID_GOAL_DEFINITION",
+        )
+    elif assertion.predicate == "topo.core/label" and (
+        assertion.object_value is None
+        or assertion.object_value.value_type != "text"
+        or not isinstance(assertion.object_value.value, str)
+        or not assertion.object_value.value.strip()
+    ):
+        raise ProposalDecisionError(
+            "INVALID_ENTITY_LABEL",
+            "/proposal/proposed_assertion/object_value",
+            "an entity label must be non-empty text",
         )
 
 
@@ -364,6 +452,7 @@ def default_module_catalog() -> ModuleCatalog:
         "domain.parties",
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=(
+            "domain.parties/inventory_coverage",
             "domain.parties/household_membership",
             "domain.parties/ownership",
             "domain.parties/household_allocation",
@@ -375,13 +464,16 @@ def default_module_catalog() -> ModuleCatalog:
         ),
         constraints=(
             ModuleConstraint("complete-distribution", _validate_distribution),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     accounts = module_descriptor(
         "domain.accounts",
-        dependencies=(ModuleDependency("domain.parties", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.parties", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=(
+            "domain.accounts/inventory_coverage",
+            "domain.accounts/external_identity",
             *_classification_ids(
                 "domain.accounts",
                 ("payment_account", "savings_account", "investment_account"),
@@ -402,6 +494,7 @@ def default_module_catalog() -> ModuleCatalog:
                 "transaction-coverage-shape", _validate_transaction_coverage
             ),
             ModuleConstraint("account-balance-shape", _validate_valuation_shape),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     cashflow_names = (
@@ -432,9 +525,10 @@ def default_module_catalog() -> ModuleCatalog:
     )
     cashflow = module_descriptor(
         "domain.cashflow",
-        dependencies=(ModuleDependency("domain.accounts", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.accounts", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views", "recognition"),
         public_identifiers=(
+            "domain.cashflow/inventory_coverage",
             "domain.cashflow/monthly_salary",
             "domain.cashflow/booking_date",
             "domain.cashflow/money",
@@ -449,11 +543,12 @@ def default_module_catalog() -> ModuleCatalog:
         constraints=(
             _exclusive_classification_constraint("domain.cashflow", cashflow_names),
             ModuleConstraint("recurring-cashflow-shape", _validate_recurring_cashflow),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     assets = module_descriptor(
         "domain.assets",
-        dependencies=(ModuleDependency("domain.parties", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.parties", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=_classification_ids(
             "domain.assets",
@@ -467,7 +562,7 @@ def default_module_catalog() -> ModuleCatalog:
                 "etf",
             ),
         )
-        + ("domain.assets/value",),
+        + ("domain.assets/value", "domain.assets/inventory_coverage"),
         constraints=(
             _exclusive_classification_constraint(
                 "domain.assets",
@@ -482,13 +577,15 @@ def default_module_catalog() -> ModuleCatalog:
             ),
             ModuleConstraint("asset-double-counting", _validate_double_counting),
             ModuleConstraint("asset-value-shape", _validate_valuation_shape),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     debts = module_descriptor(
         "domain.debts",
-        dependencies=(ModuleDependency("domain.parties", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.parties", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=(
+            "domain.debts/inventory_coverage",
             *_classification_ids(
                 "domain.debts",
                 (
@@ -515,13 +612,15 @@ def default_module_catalog() -> ModuleCatalog:
             ),
             ModuleConstraint("debt-double-counting", _validate_double_counting),
             ModuleConstraint("debt-balance-shape", _validate_valuation_shape),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     contracts = module_descriptor(
         "domain.contracts",
-        dependencies=(ModuleDependency("domain.parties", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.parties", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=(
+            "domain.contracts/inventory_coverage",
             *_classification_ids(
                 "domain.contracts",
                 (
@@ -555,41 +654,55 @@ def default_module_catalog() -> ModuleCatalog:
                     "other_contract",
                 ),
             ),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     insurance = module_descriptor(
         "domain.insurance",
-        dependencies=(ModuleDependency("domain.contracts", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.contracts", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=("domain.insurance/insured_subject",),
     )
     pensions = module_descriptor(
         "domain.pensions",
         dependencies=(
-            ModuleDependency("domain.accounts", "0.1.0"),
-            ModuleDependency("domain.contracts", "0.1.0"),
+            ModuleDependency("domain.accounts", "0.2.0"),
+            ModuleDependency("domain.contracts", "0.2.0"),
         ),
         capabilities=("classifications", "constraints", "input_views"),
-        public_identifiers=("domain.pensions/entitlement", "domain.pensions/value"),
+        public_identifiers=(
+            "domain.pensions/entitlement",
+            "domain.pensions/value",
+            "domain.pensions/inventory_coverage",
+        ),
         constraints=(
             ModuleConstraint("pension-value-shape", _validate_valuation_shape),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
         ),
     )
     goals = module_descriptor(
         "domain.goals",
-        dependencies=(ModuleDependency("domain.parties", "0.1.0"),),
+        dependencies=(ModuleDependency("domain.parties", "0.2.0"),),
         capabilities=("classifications", "constraints", "input_views"),
-        public_identifiers=("domain.goals/affects", "domain.goals/affected_event"),
+        public_identifiers=(
+            "domain.goals/affects",
+            "domain.goals/affected_event",
+            "domain.goals/definition",
+            "domain.goals/inventory_coverage",
+        ),
+        constraints=(
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
+        ),
     )
     dutch = module_descriptor(
         "jurisdiction.nl",
         dependencies=(
-            ModuleDependency("domain.accounts", "0.1.0"),
-            ModuleDependency("domain.assets", "0.1.0"),
-            ModuleDependency("domain.cashflow", "0.1.0"),
-            ModuleDependency("domain.debts", "0.1.0"),
-            ModuleDependency("domain.insurance", "0.1.0"),
-            ModuleDependency("domain.pensions", "0.1.0"),
+            ModuleDependency("domain.accounts", "0.2.0"),
+            ModuleDependency("domain.assets", "0.2.0"),
+            ModuleDependency("domain.cashflow", "0.2.0"),
+            ModuleDependency("domain.debts", "0.2.0"),
+            ModuleDependency("domain.insurance", "0.2.0"),
+            ModuleDependency("domain.pensions", "0.2.0"),
         ),
         capabilities=("classifications", "constraints", "input_views"),
         public_identifiers=tuple(
@@ -636,8 +749,11 @@ def default_module_catalog() -> ModuleCatalog:
     core = module_descriptor(
         "topo.core",
         capabilities=("graph_invariants",),
-        public_identifiers=("topo.core/exchange_rate",),
-        constraints=(ModuleConstraint("exchange-rate-shape", _validate_exchange_rate),),
+        public_identifiers=("topo.core/exchange_rate", "topo.core/label"),
+        constraints=(
+            ModuleConstraint("exchange-rate-shape", _validate_exchange_rate),
+            ModuleConstraint("context-value-shapes", _validate_context_value_shapes),
+        ),
     )
     return ModuleCatalog(
         (

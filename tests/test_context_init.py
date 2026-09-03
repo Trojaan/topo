@@ -112,7 +112,7 @@ def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None
     assert {path.name for path in generation.iterdir()} == expected_files
 
     entities = read_json(generation / "entities.json")
-    assert entities["schema_version"] == "topo.context/0.1"
+    assert entities["schema_version"] == "topo.context/0.2"
     assert [record["entity_type"] for record in entities["records"]] == [
         "context",
         "household",
@@ -137,6 +137,8 @@ def test_user_can_initialize_a_complete_first_generation(tmp_path: Path) -> None
 
     manifest = read_json(generation / "manifest.json")
     assert manifest["schema_version"] == "topo.manifest/0.1"
+    assert manifest["package_version"] == "0.2"
+    assert manifest["context_schema_version"] == "topo.context/0.2"
     assert manifest["context_id"] == response["context_id"]
     assert "jurisdiction.nl" in {module["module_id"] for module in manifest["modules"]}
     assert manifest["generation_id"] == generation_id
@@ -290,8 +292,11 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
+        "proposal.confirm-batch",
+        "proposal.reject-batch",
         "analyze.run",
         "workflow.next",
+        "workflow.respond",
         "rule.validate",
         "rule.preview",
         "rule.activate",

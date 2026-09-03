@@ -33,6 +33,12 @@ This directory contains a local, auditable financial context in `context.topo/`.
   authorization may promote it to a confirmed fact.
 - Use `topo workflow next` with `--package ./context.topo`,
   `--request <request.json>`, and `--json` for deterministic next-action guidance.
+- Set `include_basis_context` to `true`. After every successful mutation, call
+  `workflow.next` again with the prior generation in `since_generation`.
+- Execute safe, effect-free analysis and inventory steps immediately. Convert a
+  user's answer to `workflow.respond`. Continue until the one next action needs
+  user information, conflict resolution, or explicit authorization; never wait
+  for the user to say "next step".
 - Ask the user for meaningful missing information they can reasonably provide;
   use only the workflow action's question and `user_input_schema` for that request.
 - Fill technical fields from the action's `request_template` and
@@ -40,6 +46,11 @@ This directory contains a local, auditable financial context in `context.topo/`.
   contract context, invent references, or use unrelated transactions as evidence.
 - If an action has no valid evidence or execution route, report the contract gap
   explicitly instead of guessing.
+- After every step, present a compact Dutch update with exactly these headings,
+  in this order: `Zojuist gewijzigd`, `Bevestigde context`,
+  `Openstaand en onzeker`, `Actuele inzichten`, `Volgende vraag`. Keep provenance,
+  validity, verification, and refs available below the compact overview. Never
+  invent or display one general completeness percentage.
 - Check the installed version with `topo --version`. To update Topo, rerun the
   official installer for the current platform:
   - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh | bash`

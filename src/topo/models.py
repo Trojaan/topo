@@ -126,9 +126,28 @@ class ValidTime(TopoModel):
 
 class EntityRecord(TopoModel):
     id: UUID7
-    entity_type: Literal["context", "person", "household", "account", "transaction"]
+    entity_type: Literal[
+        "context",
+        "person",
+        "household",
+        "account",
+        "transaction",
+        "asset",
+        "debt",
+        "contract",
+        "pension_entitlement",
+        "goal",
+    ]
     module_id: Literal[
-        "topo.core", "domain.parties", "domain.accounts", "domain.cashflow"
+        "topo.core",
+        "domain.parties",
+        "domain.accounts",
+        "domain.cashflow",
+        "domain.assets",
+        "domain.debts",
+        "domain.contracts",
+        "domain.pensions",
+        "domain.goals",
     ]
     created_at: AwareDatetime
 
@@ -232,11 +251,35 @@ class ProposalDecision(TopoModel):
     assertion_id: UUID7 | None
 
 
+class ProposedEntity(TopoModel):
+    id: UUID7
+    entity_type: Literal[
+        "person",
+        "account",
+        "asset",
+        "debt",
+        "contract",
+        "pension_entitlement",
+        "goal",
+    ]
+    module_id: Literal[
+        "domain.parties",
+        "domain.accounts",
+        "domain.assets",
+        "domain.debts",
+        "domain.contracts",
+        "domain.pensions",
+        "domain.goals",
+    ]
+
+
 class ProposalRecord(TopoModel):
     id: UUID7
-    proposal_type: Literal["assertion"]
+    proposal_type: Literal["assertion", "entity"]
     producer: Producer
-    proposed_assertion: ProposedAssertion
+    proposed_assertion: ProposedAssertion | None = None
+    proposed_entity: ProposedEntity | None = None
+    batch_id: UUID7 | None = None
     evidence_refs: tuple[Ref, ...] = Field(min_length=1)
     reason_ref: NonEmptyString
     detection: Detection | None = None
@@ -244,9 +287,18 @@ class ProposalRecord(TopoModel):
     created_at: AwareDatetime
     decision: ProposalDecision | None
 
+    @model_validator(mode="after")
+    def matching_payload(self) -> ProposalRecord:
+        if self.proposal_type == "assertion":
+            if self.proposed_assertion is None or self.proposed_entity is not None:
+                raise ValueError("assertion proposals require proposed_assertion only")
+        elif self.proposed_entity is None or self.proposed_assertion is not None:
+            raise ValueError("entity proposals require proposed_entity only")
+        return self
+
 
 class CanonicalCollection[RecordT: TopoModel](TopoModel):
-    schema_version: Literal["topo.context/0.1"]
+    schema_version: Literal["topo.context/0.1", "topo.context/0.2"]
     records: tuple[RecordT, ...]
 
 
@@ -270,8 +322,8 @@ class Manifest(TopoModel):
     context_id: UUID7
     generation_id: UUID7
     based_on: UUID7 | None
-    package_version: Literal["0.1"]
-    context_schema_version: Literal["topo.context/0.1"]
+    package_version: Literal["0.1", "0.2"]
+    context_schema_version: Literal["topo.context/0.1", "topo.context/0.2"]
     mutation_id: UUID7
     recorded_at: AwareDatetime
     modules: tuple[ModulePin, ...] = Field(min_length=1)
@@ -289,6 +341,9 @@ class JournalEntry(TopoModel):
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
+        "workflow.respond",
+        "proposal.confirm-batch",
+        "proposal.reject-batch",
         "rule.activate",
         "context.migrate",
         "context.restore",
@@ -383,6 +438,7 @@ class ContextMigrateRequest(MutationRequest):
     target_package_version: NonEmptyString
     target_context_schema_version: NonEmptyString
     target_module_versions: dict[NonEmptyString, NonEmptyString]
+    authorization: Authorization | None = None
 
 
 class ContextRestoreRequest(MutationRequest):
@@ -518,6 +574,31 @@ class TransactionCoverageValue(TopoModel):
         return self
 
 
+class InventoryCoverageValue(TopoModel):
+    coverage: Literal["partial", "complete"]
+    as_of_date: date
+    item_refs: tuple[Ref, ...]
+
+    @model_validator(mode="after")
+    def unique_entity_refs(self) -> InventoryCoverageValue:
+        identities = tuple((ref.ref_type, ref.id) for ref in self.item_refs)
+        if any(ref.ref_type != "entity" for ref in self.item_refs):
+            raise ValueError("inventory coverage item refs must be entity refs")
+        if len(identities) != len(set(identities)):
+            raise ValueError("inventory coverage item refs must be unique")
+        return self
+
+
+class ExternalIdentityValue(TopoModel):
+    adapter_id: NonEmptyString
+    source_id: NonEmptyString
+
+
+class GoalDefinitionValue(TopoModel):
+    target_date: date | None = None
+    target_money: Money | None = None
+
+
 class RealizedAnalyzeRunRequest(TopoModel):
     contract_version: Literal["topo.cli/0.1"]
     analysis_id: Literal["analysis.realized_monthly_cashflow"]
@@ -630,9 +711,13 @@ type AnalyzeRunRequest = Annotated[
 class WorkflowNextRequest(TopoModel):
     contract_version: Literal["topo.cli/0.1"]
     context_id: UUID7
-    analysis_id: Literal["analysis.net_worth"]
+    workflow_contract_version: Literal["topo.workflow/0.2"] = "topo.workflow/0.2"
+    analysis_id: Literal["analysis.net_worth"] = "analysis.net_worth"
     analysis_scope: AnalysisScope
     as_of_date: date
+    include_basis_context: bool = False
+    since_generation: UUID7 | None = None
+    reporting_currency: ReportingCurrency | None = None
 
 
 class DiscoveryRequest(TopoModel):
@@ -709,6 +794,70 @@ class WorkflowProposalResponse(TopoModel):
         return self
 
 
+class WorkflowContextItem(TopoModel):
+    item_id: UUID7
+    label: NonEmptyString
+    entity_ref: Ref | None = None
+    entity_type: Literal[
+        "person",
+        "account",
+        "asset",
+        "debt",
+        "contract",
+        "pension_entitlement",
+        "goal",
+        "recurring_cashflow",
+    ]
+    classification: NonEmptyString | None = None
+    money: Money | None = None
+    amount_range: RecurringAmountRange | None = None
+    typical_money: Money | None = None
+    direction: Literal["inflow", "outflow"] | None = None
+    frequency: (
+        Literal["weekly", "four_weekly", "monthly", "quarterly", "annual"] | None
+    ) = None
+    expected_period: RecurringExpectedPeriod | None = None
+    valid_from: date | None = None
+    target_date: date | None = None
+    target_money: Money | None = None
+    household_share: DecimalString | None = None
+    source: WorkflowAccountSource | None = None
+
+
+class WorkflowContextResponse(TopoModel):
+    action_id: UUID7
+    response_type: Literal["context_inventory"]
+    section_id: Literal[
+        "household",
+        "accounts",
+        "cashflow",
+        "assets",
+        "debts",
+        "pensions",
+        "contracts_insurance",
+        "goals",
+    ]
+    analysis_scope: AnalysisScope
+    as_of_date: date
+    producer: Producer
+    coverage: Literal["partial", "complete"]
+    items: tuple[WorkflowContextItem, ...]
+
+
+class WorkflowRespondRequest(MutationRequest):
+    workflow_response: WorkflowContextResponse
+
+    @model_validator(mode="after")
+    def valid_workflow_answer(self) -> WorkflowRespondRequest:
+        if self.operation_id != self.workflow_response.action_id:
+            raise ValueError("workflow action_id must equal operation_id")
+        if self.actor.actor_type != "agent":
+            raise ValueError("workflow responses must be submitted by an agent")
+        if self.actor.actor_id != self.workflow_response.producer.producer_id:
+            raise ValueError("workflow producer must match the request actor")
+        return self
+
+
 class ProposalDecisionRequest(MutationRequest):
     proposal_ref: UUID7
 
@@ -735,6 +884,18 @@ class ProposalCorrectRequest(ProposalDecisionRequest):
 
 
 class ProposalRejectRequest(ProposalDecisionRequest):
+    pass
+
+
+class ProposalBatchDecisionRequest(MutationRequest):
+    batch_id: UUID7
+
+
+class ProposalBatchConfirmRequest(ProposalBatchDecisionRequest):
+    authorization: Authorization | None
+
+
+class ProposalBatchRejectRequest(ProposalBatchDecisionRequest):
     pass
 
 
