@@ -49,6 +49,18 @@ uv run topo init /tmp/example-finances --json
 uv run topo context status --package /tmp/example-finances/context.topo --json
 ```
 
+Status, workflow, and analysis commands use the fully validated current
+generation for interactive reads. Run an explicit full-history integrity check
+with:
+
+```bash
+uv run topo context verify --package /tmp/example-finances/context.topo --json
+```
+
+The result reports the current generation plus the numbers of retained
+generations and raw evidence records checked. Mutating commands perform this
+full-history validation automatically.
+
 After initialization, an adapter can submit the versioned `source.import` JSON
 contract through stdin (or `--request`) with:
 

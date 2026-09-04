@@ -7,7 +7,8 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,11 @@ class StorageAdapter(Protocol):
     def commit(
         self, publication: PackageCommit, *, expected_generation: str | None
     ) -> None: ...
+
+
+@runtime_checkable
+class CurrentStorage(Protocol):
+    def load_current(self) -> StoredPackageSnapshot | None: ...
 
 
 @runtime_checkable
@@ -147,17 +153,47 @@ def _evidence_record_path(record_path: str) -> Path:
     return path
 
 
-def _read_evidence_records(package: Path) -> dict[str, bytes]:
+def _read_evidence_records(
+    package: Path, record_paths: set[str] | None = None
+) -> dict[str, bytes]:
     records = package / "evidence" / "records"
     if records.is_symlink() or not records.is_dir():
         raise ValueError("evidence records must be a real directory")
     result: dict[str, bytes] = {}
-    for path in records.iterdir():
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("evidence records contain a non-file entry")
-        record_path = str(path.relative_to(package))
-        _evidence_record_path(record_path)
-        result[record_path] = path.read_bytes()
+    selected: list[tuple[str, str]] = []
+    with os.scandir(records) as entries:
+        for entry in entries:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                raise ValueError("evidence records contain a non-file entry")
+            record_path = f"evidence/records/{entry.name}"
+            _evidence_record_path(record_path)
+            if record_paths is None or record_path in record_paths:
+                selected.append((record_path, entry.path))
+    if record_paths is not None and {path for path, _ in selected} != record_paths:
+        raise ValueError("evidence record does not exist")
+
+    def read_record(item: tuple[str, str]) -> tuple[str, bytes]:
+        record_path, path = item
+        with open(path, "rb") as stream:
+            return record_path, stream.read()
+
+    loaded: Iterable[tuple[str, bytes]]
+    if len(selected) < 64:
+        loaded = map(read_record, selected)
+    else:
+        chunks = tuple(tuple(selected[offset::8]) for offset in range(8))
+
+        def read_chunk(
+            chunk: tuple[tuple[str, str], ...],
+        ) -> tuple[tuple[str, bytes], ...]:
+            return tuple(read_record(item) for item in chunk)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            loaded = tuple(
+                record for chunk in executor.map(read_chunk, chunks) for record in chunk
+            )
+    for record_path, payload in loaded:
+        result[record_path] = payload
     return result
 
 
@@ -324,29 +360,87 @@ class FileSystemStorageAdapter:
             raise OSError("context package cannot be a symbolic link")
 
         with _exclusive_file_lock(self._package / "LOCK"):
-            self._recover_and_validate_history()
-            generation_id = (
-                (self._package / "CURRENT").read_text(encoding="utf-8").strip()
+            return self._load_full_locked()
+
+    def load_current(self) -> StoredPackageSnapshot | None:
+        if not self._package.exists():
+            return None
+        if self._package.is_symlink():
+            raise OSError("context package cannot be a symbolic link")
+
+        with _exclusive_file_lock(self._package / "LOCK"):
+            if self._has_recovery_artifacts():
+                return self._load_full_locked()
+            generation_id, generations, history = self._current_paths_locked()
+            journal_path = history / "journal.json"
+            current_path = self._package / "CURRENT"
+            if current_path.is_symlink() or journal_path.is_symlink():
+                raise OSError("canonical package files cannot be symbolic links")
+            referenced_evidence = _referenced_evidence_record_paths(
+                self._package, {generation_id}
             )
-            generations = self._package / "generations"
-            history = self._package / "history"
-            if generations.is_symlink() or history.is_symlink():
-                raise OSError("canonical package directories cannot be symbolic links")
-            generation = generations / generation_id
-            generation_files = _read_generation(generation)
-            retained_generation_files = {
-                path.name: _read_generation(path)
-                for path in generations.iterdir()
-                if path.name != generation_id
-            }
-            journal = (history / "journal.json").read_bytes()
-            evidence_records = _read_evidence_records(self._package)
+            return StoredPackageSnapshot(
+                current_generation=generation_id,
+                generation_files=_read_generation(generations / generation_id),
+                journal=journal_path.read_bytes(),
+                evidence_records=_read_evidence_records(
+                    self._package, referenced_evidence
+                ),
+                retained_generation_files=None,
+            )
+
+    def _load_full_locked(self) -> StoredPackageSnapshot:
+        self._recover_and_validate_history()
+        generation_id, generations, history = self._current_paths_locked()
+        generation_files = _read_generation(generations / generation_id)
+        retained_generation_files = {
+            path.name: _read_generation(path)
+            for path in generations.iterdir()
+            if path.name != generation_id
+        }
         return StoredPackageSnapshot(
             current_generation=generation_id,
             generation_files=generation_files,
-            journal=journal,
-            evidence_records=evidence_records,
+            journal=(history / "journal.json").read_bytes(),
+            evidence_records=_read_evidence_records(self._package),
             retained_generation_files=retained_generation_files,
+        )
+
+    def _current_paths_locked(self) -> tuple[str, Path, Path]:
+        current_path = self._package / "CURRENT"
+        generations = self._package / "generations"
+        history = self._package / "history"
+        if (
+            current_path.is_symlink()
+            or generations.is_symlink()
+            or history.is_symlink()
+        ):
+            raise OSError("canonical package paths cannot be symbolic links")
+        generation_id = current_path.read_text(encoding="utf-8").strip()
+        generation_component = Path(generation_id)
+        if len(generation_component.parts) != 1 or generation_component.name in {
+            "",
+            ".",
+            "..",
+        }:
+            raise OSError("CURRENT contains an invalid generation id")
+        return generation_id, generations, history
+
+    def _has_recovery_artifacts(self) -> bool:
+        staging = self._package / "staging"
+        history = self._package / "history"
+        if staging.is_symlink() or history.is_symlink():
+            return True
+        if any(staging.iterdir()):
+            return True
+        temporary_paths = (
+            self._package / ".CURRENT.tmp",
+            history / ".journal.tmp",
+        )
+        if any(path.exists() or path.is_symlink() for path in temporary_paths):
+            return True
+        return any(
+            path.name.startswith(".evidence-inventory-") for path in history.iterdir()
         )
 
     def store_explanations(self, records: dict[str, bytes]) -> None:

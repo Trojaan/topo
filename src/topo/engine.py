@@ -39,6 +39,7 @@ from topo.models import (
     ContextRestoreRequest,
     ContextRetentionRequest,
     ContextStatusResult,
+    ContextVerifyResult,
     DiscoveryOutcome,
     DiscoveryRequest,
     EntityRecord,
@@ -98,6 +99,7 @@ from topo.rules import (
 )
 from topo.scenario import analyze_scenario_comparison
 from topo.storage import (
+    CurrentStorage,
     ExplanationStorage,
     PackageCommit,
     PrivacyStorage,
@@ -280,8 +282,18 @@ class EngineCore:
             modules=validated.manifest.modules,
         )
 
+    def verify_context(self) -> ContextVerifyResult:
+        snapshot = self._load_snapshot()
+        validated = load_and_validate_generation(snapshot)
+        return ContextVerifyResult(
+            context_id=validated.manifest.context_id,
+            generation_id=validated.manifest.generation_id,
+            generations_verified=1 + len(snapshot.retained_generation_files or {}),
+            evidence_records_verified=len(snapshot.evidence_records),
+        )
+
     def migrate_context(self, request: ContextMigrateRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -415,7 +427,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def apply_retention(self, request: ContextRetentionRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -566,7 +578,7 @@ class EngineCore:
             evidence_records=remaining_records,
             evidence_inventories=inventories,
         )
-        self._load_existing()
+        self._load_full_existing()
         return self._success(request, generation_id, result)
 
     @staticmethod
@@ -735,7 +747,7 @@ class EngineCore:
         return indexed
 
     def activate_rules(self, request: RuleActivateRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -823,7 +835,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def submit_proposal(self, request: ProposalSubmitRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -867,7 +879,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def respond_to_workflow(self, request: WorkflowRespondRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -1494,7 +1506,7 @@ class EngineCore:
         )
 
     def import_source(self, request: SourceImportRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -1774,7 +1786,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def confirm_proposal(self, request: ProposalConfirmRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -1871,7 +1883,7 @@ class EngineCore:
     def confirm_proposal_batch(
         self, request: ProposalBatchConfirmRequest
     ) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -2048,7 +2060,7 @@ class EngineCore:
     def reject_proposal_batch(
         self, request: ProposalBatchRejectRequest
     ) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -2105,7 +2117,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def correct_proposal(self, request: ProposalCorrectRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -2212,7 +2224,7 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def reject_proposal(self, request: ProposalRejectRequest) -> MutationOutcome:
-        validated = self._load_existing()
+        validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
         if replay is not None:
             return self._replayed_outcome(validated.manifest, replay)
@@ -2255,7 +2267,23 @@ class EngineCore:
         return self._success(request, generation_id, result)
 
     def _load_existing(self) -> ValidatedPackage:
+        return load_and_validate_generation(self._load_current_snapshot())
+
+    def _load_full_existing(self) -> ValidatedPackage:
         return load_and_validate_generation(self._load_snapshot())
+
+    def _load_current_snapshot(self) -> StoredPackageSnapshot:
+        try:
+            snapshot = (
+                self._storage.load_current()
+                if isinstance(self._storage, CurrentStorage)
+                else self._storage.load()
+            )
+        except OSError as error:
+            raise PackageIntegrityError(str(error)) from error
+        if snapshot is None:
+            raise PackageIntegrityError("context package does not exist")
+        return snapshot
 
     def _load_snapshot(self) -> StoredPackageSnapshot:
         try:

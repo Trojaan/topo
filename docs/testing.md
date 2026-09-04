@@ -12,6 +12,19 @@ Run the complete gate with `scripts/verify.sh`. Run only the e2e journey with
 `scripts/e2e.sh`; its terminal transcript is saved under
 `test-results/e2e/pytest.txt`. Generated evidence is ignored by Git.
 
+The opt-in read-performance gate builds a temporary synthetic package with 7,500
+source records, about 30,000 assertions, and six immutable generations. After one
+warm-up per command it requires the median of three separate CLI processes for
+status, workflow-next, and net-worth analysis to remain below two seconds:
+
+```bash
+uv run python scripts/benchmark_reads.py
+```
+
+The fixture is deleted after the run and never contains personal financial data.
+Keep this benchmark separate from the ordinary correctness gate because building
+the large immutable history is intentionally expensive.
+
 The initial journey proves contract discovery, first context publication, the
 client-visible success envelope, canonical persisted state, empty-context
 inventory, deterministic effect-free workflow guidance, unknown major-version
@@ -53,9 +66,12 @@ preview traces, explicit human authorization, atomic full-package activation,
 checksum-bound manifest pins, and stale-manifest conflict handling.
 
 The context-lifecycle journey proves compatible migration, new-generation restore,
-bounded retention with an explicit restore point, and package-wide privacy scrub
-through the public CLI. Unit integration tests additionally prove incompatible
-migration has no effect and scrubbed assertions are marked unverifiable.
+bounded retention with an explicit restore point, package-wide privacy scrub, and
+explicit full-history verification through the public CLI. Unit integration tests
+additionally prove incompatible migration has no effect, scrubbed assertions are
+marked unverifiable, current-only reads omit retained snapshots, recovery artifacts
+trigger full recovery, and retained corruption still blocks verification and
+mutation.
 
 The proactive-workflow journey validates every generated request against its
 published schema, proposes manual accounts plus balances, allocation and coverage

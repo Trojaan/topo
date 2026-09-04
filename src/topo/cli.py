@@ -39,6 +39,7 @@ from topo.models import (
     ContextRestoreRequest,
     ContextRetentionRequest,
     ContextStatusRequest,
+    ContextVerifyRequest,
     Diagnostic,
     DiscoveryRequest,
     JsonObject,
@@ -101,7 +102,7 @@ def _normalize_request(
         normalized.setdefault("reason", "Initialize local Topo context")
     if command == "workspace.init":
         normalized["directory"] = str(args.directory)
-    if command == "context.status":
+    if command in {"context.status", "context.verify"}:
         normalized["package"] = str(args.package)
     if command == "source.import" and args.records_csv is not None:
         if "records" in normalized:
@@ -346,6 +347,8 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--package", type=Path, required=True)
     status = context_commands.add_parser("status")
     status.add_argument("--package", type=Path, required=True)
+    verify = context_commands.add_parser("verify")
+    verify.add_argument("--package", type=Path, required=True)
     for name in ("migrate", "restore", "compact", "privacy-scrub"):
         lifecycle = context_commands.add_parser(name)
         lifecycle.add_argument("--package", type=Path, required=True)
@@ -664,6 +667,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context_id=status_result.context_id,
                     generation_before=status_result.generation_id,
                     generation_after=status_result.generation_id,
+                )
+            )
+            return 0
+        if command == "context.verify":
+            verify_request = ContextVerifyRequest.model_validate(request, strict=True)
+            verify_result = EngineCore(
+                FileSystemStorageAdapter(Path(verify_request.package))
+            ).verify_context()
+            verify_result_json = model_to_json_object(verify_result)
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    verify_result_json,
+                    context_id=verify_result.context_id,
+                    generation_before=verify_result.generation_id,
+                    generation_after=verify_result.generation_id,
                 )
             )
             return 0

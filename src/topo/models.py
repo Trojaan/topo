@@ -396,6 +396,18 @@ class ContextStatusResult(TopoModel):
     modules: tuple[ModulePin, ...]
 
 
+class ContextVerifyRequest(TopoModel):
+    contract_version: Literal["topo.cli/0.1"]
+    package: NonEmptyString
+
+
+class ContextVerifyResult(TopoModel):
+    context_id: UUID7
+    generation_id: UUID7
+    generations_verified: int = Field(ge=1)
+    evidence_records_verified: int = Field(ge=0)
+
+
 class WorkspaceInitRequest(TopoModel):
     contract_version: Literal["topo.cli/0.1"]
     directory: NonEmptyString

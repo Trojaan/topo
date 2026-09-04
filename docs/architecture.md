@@ -65,16 +65,27 @@ remediation when a forbidden import appears.
 
 ## Persistence transaction
 
-Every mutation loads and validates the current generation, applies the complete
-change in memory, validates the proposed publication, writes a new immutable
-generation, durably updates the journal, and atomically switches `CURRENT`.
+Every mutation loads and semantically validates the current and all retained
+generations, applies the complete change in memory, validates the proposed
+publication, writes a new immutable generation, durably updates the journal, and
+atomically switches `CURRENT`.
 Operation IDs make retries safe. Expected-generation checks prevent stale writers.
 Packages created before opaque evidence inventories are bootstrapped only when
 their external evidence directory is empty; non-empty ambiguous state fails closed.
 
-`context status` loads the same fully validated package as every other engine
-operation and projects only its current identity, initialization identities,
-schema versions, and module pins. It never publishes or repairs a generation.
+Effect-free daily reads (`context status`, workflow, analyses, discovery,
+explanations, and rule validation/preview) load and fully validate the current
+generation without semantically materializing retained generations. The storage
+adapter still validates the current evidence inventory. If staging or temporary
+publication artifacts are present, the current-only path first falls back to full
+recovery. `context status` projects only current identity, initialization
+identities, schema versions, and module pins; it never publishes a generation.
+
+`context verify` explicitly loads and semantically validates the current and all
+retained generations plus their raw evidence. Mutations use that same full-history
+boundary, so corruption in a retained generation cannot be carried into a new
+publication. Historical corruption may therefore leave an effect-free current
+read available while verification and mutation fail closed.
 
 Rule-package validation and preview load the current generation but never publish.
 Activation is an ordinary EngineCore mutation: a human authorization is bound to

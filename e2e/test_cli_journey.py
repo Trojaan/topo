@@ -32,7 +32,12 @@ def test_user_discovers_contract_and_publishes_first_context(tmp_path: Path) -> 
     assert described.returncode == 0, described.stderr
     contract = parse_json(described)
     commands = {item["command"] for item in contract["result"]["commands"]}
-    assert {"context.init", "proposal.submit", "proposal.confirm"} <= commands
+    assert {
+        "context.init",
+        "context.verify",
+        "proposal.submit",
+        "proposal.confirm",
+    } <= commands
 
     package = tmp_path / "journey.topo"
     initialized = run_topo("context", "init", "--package", str(package), "--json")
@@ -42,6 +47,17 @@ def test_user_discovers_contract_and_publishes_first_context(tmp_path: Path) -> 
     assert response["command"] == "context.init"
     assert response["result"]["context_id"]
     generation_id = response["result"]["generation_id"]
+
+    verified = run_topo("context", "verify", "--package", str(package), "--json")
+    assert verified.returncode == 0, verified.stderr
+    verification = parse_json(verified)
+    assert verification["command"] == "context.verify"
+    assert verification["result"] == {
+        "context_id": response["result"]["context_id"],
+        "generation_id": generation_id,
+        "generations_verified": 1,
+        "evidence_records_verified": 0,
+    }
 
     analysis_request = {
         "contract_version": "topo.cli/0.1",

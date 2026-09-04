@@ -130,9 +130,10 @@ def test_opening_package_discards_crash_staging_and_unpublished_generation(
     )
     orphan_inventory.write_text('{"paths":[]}\n', encoding="utf-8")
 
-    snapshot = FileSystemStorageAdapter(package).load()
+    snapshot = FileSystemStorageAdapter(package).load_current()
 
     assert snapshot is not None
+    assert snapshot.retained_generation_files is not None
     assert snapshot.current_generation == current_id
     assert (package / "CURRENT").read_text(encoding="utf-8").strip() == current_id
     assert not orphan_path.exists()
@@ -164,6 +165,46 @@ def test_pre_inventory_package_is_bootstrapped_before_its_next_mutation(
     assert len(inventories) == 2
 
 
+def test_current_load_omits_retained_generations_without_recovery_artifacts(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "current-only.topo"
+    initialized = initialize(package)
+    submitted = submit_salary_proposal(package, initialized)
+
+    snapshot = FileSystemStorageAdapter(package).load_current()
+
+    assert snapshot is not None
+    assert snapshot.current_generation == submitted["generation_after"]
+    assert snapshot.retained_generation_files is None
+
+
+def test_context_verify_checks_the_complete_retained_package(tmp_path: Path) -> None:
+    package = tmp_path / "verify.topo"
+    initialized = initialize(package)
+    submitted = submit_salary_proposal(package, initialized)
+
+    verified = run_topo(
+        "context",
+        "verify",
+        "--package",
+        str(package),
+        request={"contract_version": "topo.cli/0.1"},
+    )
+
+    assert verified.returncode == 0, verified.stderr
+    response = json.loads(verified.stdout)
+    assert response["command"] == "context.verify"
+    assert response["generation_before"] == submitted["generation_after"]
+    assert response["generation_after"] == submitted["generation_after"]
+    assert response["result"] == {
+        "context_id": initialized["context_id"],
+        "generation_id": submitted["generation_after"],
+        "generations_verified": 2,
+        "evidence_records_verified": 0,
+    }
+
+
 def test_manifest_tampering_keeps_raw_read_available_and_blocks_mutation(
     tmp_path: Path,
 ) -> None:
@@ -181,6 +222,13 @@ def test_manifest_tampering_keeps_raw_read_available_and_blocks_mutation(
 
     snapshot = FileSystemStorageAdapter(package).load()
     before = (package / "CURRENT").read_bytes()
+    status = run_topo(
+        "context",
+        "status",
+        "--package",
+        str(package),
+        request={"contract_version": "topo.cli/0.1"},
+    )
     replayed = run_topo(
         "context",
         "init",
@@ -191,6 +239,10 @@ def test_manifest_tampering_keeps_raw_read_available_and_blocks_mutation(
 
     assert snapshot is not None
     assert snapshot.generation_files["manifest.json"] == manifest_path.read_bytes()
+    assert status.returncode == 2
+    assert json.loads(status.stdout)["diagnostics"][0]["code"] == (
+        "PACKAGE_INTEGRITY_FAILED"
+    )
     assert replayed.returncode == 2
     response = json.loads(replayed.stdout)
     assert response["diagnostics"][0]["code"] == "PACKAGE_INTEGRITY_FAILED"
@@ -252,6 +304,20 @@ def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
+    status = run_topo(
+        "context",
+        "status",
+        "--package",
+        str(package),
+        request={"contract_version": "topo.cli/0.1"},
+    )
+    verified = run_topo(
+        "context",
+        "verify",
+        "--package",
+        str(package),
+        request={"contract_version": "topo.cli/0.1"},
+    )
     snapshot = FileSystemStorageAdapter(package).load()
     rejected = run_topo(
         "proposal",
@@ -270,6 +336,11 @@ def test_tampered_retained_generation_blocks_a_new_mutation(tmp_path: Path) -> N
     )
 
     assert snapshot is not None
+    assert status.returncode == 0, status.stderr
+    assert verified.returncode == 2
+    assert json.loads(verified.stdout)["diagnostics"][0]["code"] == (
+        "PACKAGE_INTEGRITY_FAILED"
+    )
     assert snapshot.current_generation == submitted["generation_after"]
     assert rejected.returncode == 2
     response = json.loads(rejected.stdout)

@@ -21,6 +21,7 @@ COMMANDS = (
     "context.init",
     "workspace.init",
     "context.status",
+    "context.verify",
     "contract.describe",
     "contract.schema",
     "context.migrate",
@@ -675,7 +676,7 @@ def input_schema(command: str) -> SchemaObject:
     elif command == "workspace.init":
         properties["directory"] = {"type": "string", "minLength": 1}
         required.append("directory")
-    elif command == "context.status":
+    elif command in {"context.status", "context.verify"}:
         properties["package"] = {"type": "string", "minLength": 1}
         required.append("package")
     elif command == "discover.run":
@@ -885,6 +886,21 @@ def _result_schema(command: str) -> SchemaObject:
                 "package_version",
                 "context_schema_version",
                 "modules",
+            ),
+        )
+    if command == "context.verify":
+        return _closed_object(
+            {
+                "context_id": deepcopy(uuid7),
+                "generation_id": deepcopy(uuid7),
+                "generations_verified": {"type": "integer", "minimum": 1},
+                "evidence_records_verified": {"type": "integer", "minimum": 0},
+            },
+            (
+                "context_id",
+                "generation_id",
+                "generations_verified",
+                "evidence_records_verified",
             ),
         )
     if command == "context.migrate":
