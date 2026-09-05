@@ -69,6 +69,8 @@ from topo.models import (
     RulePackagePin,
     RulePackageRequest,
     ScenarioAnalyzeRunRequest,
+    SourceClassification,
+    SourceClassificationBatchRequest,
     SourceImportRecord,
     SourceImportRequest,
     SourceRecordEvidenceRecord,
@@ -1785,6 +1787,252 @@ class EngineCore:
         self._commit_update(publication, request.expected_generation)
         return self._success(request, generation_id, result)
 
+    def classify_source_proposal_batch(
+        self, request: SourceClassificationBatchRequest
+    ) -> MutationOutcome:
+        validated = self._load_full_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        if any(
+            proposal.batch_id == request.batch_id
+            for proposal in validated.proposals.records
+        ) or any(
+            entry.result.get("batch_id") == request.batch_id
+            for entry in validated.journal.entries
+        ):
+            raise ProposalDecisionError(
+                "PROPOSAL_BATCH_ID_CONFLICT",
+                "/batch_id",
+                "batch_id is already used in this context",
+            )
+
+        grouped: list[tuple[str, tuple[ProposalRecord, ...]]] = []
+        claimed: set[str] = set()
+        for index, mapping in enumerate(request.mappings):
+            selector = mapping.source
+            requested_refs = set(selector.proposal_refs)
+            matches: list[ProposalRecord] = []
+            for proposal in validated.proposals.records:
+                proposed = proposal.proposed_assertion
+                if (
+                    proposal.status != "open"
+                    or proposal.producer.producer_type != "source_adapter"
+                    or proposed is None
+                    or proposed.predicate != "domain.cashflow/source_classification"
+                    or proposed.object_value is None
+                    or proposed.object_value.value_type != "source_classification"
+                    or (requested_refs and proposal.id not in requested_refs)
+                ):
+                    continue
+                source = SourceClassification.model_validate(
+                    proposed.object_value.value, strict=True
+                )
+                if (
+                    source.category == selector.category
+                    and (
+                        selector.rule_version is None
+                        or source.rule_version == selector.rule_version
+                    )
+                    and (
+                        selector.explanation is None
+                        or source.explanation == selector.explanation
+                    )
+                ):
+                    matches.append(proposal)
+            matched_refs = {proposal.id for proposal in matches}
+            if requested_refs and matched_refs != requested_refs:
+                raise ProposalDecisionError(
+                    "SOURCE_CLASSIFICATION_SELECTION_MISMATCH",
+                    f"/mappings/{index}/source/proposal_refs",
+                    "every proposal_ref must resolve to an open matching source classification",
+                )
+            if not matches:
+                raise ProposalDecisionError(
+                    "SOURCE_CLASSIFICATION_SELECTION_EMPTY",
+                    f"/mappings/{index}/source",
+                    "source classification selector matches no open proposals",
+                )
+            overlap = claimed & matched_refs
+            if overlap:
+                raise ProposalDecisionError(
+                    "SOURCE_CLASSIFICATION_SELECTION_OVERLAP",
+                    f"/mappings/{index}/source",
+                    "a source proposal may be classified by only one mapping",
+                )
+            claimed.update(matched_refs)
+            grouped.append(
+                (
+                    mapping.target_classification,
+                    tuple(sorted(matches, key=lambda p: p.id)),
+                )
+            )
+
+        selected = tuple(
+            (proposal, target)
+            for target, proposals in grouped
+            for proposal in proposals
+        )
+        subject_ids = [
+            proposal.proposed_assertion.subject_ref.id  # type: ignore[union-attr]
+            for proposal, _ in selected
+        ]
+        if len(subject_ids) != len(set(subject_ids)):
+            raise ProposalDecisionError(
+                "SOURCE_CLASSIFICATION_DUPLICATE_TRANSACTION",
+                "/mappings",
+                "a transaction may occur only once in a classification batch",
+            )
+        existing_classified = {
+            assertion.subject_ref.id
+            for assertion in validated.assertions.records
+            if assertion.verification_status == "confirmed"
+            and assertion.predicate.startswith("domain.cashflow/classification/")
+        }
+        if existing_classified & set(subject_ids):
+            raise ProposalDecisionError(
+                "SOURCE_CLASSIFICATION_ALREADY_CONFIRMED",
+                "/mappings",
+                "a selected transaction already has a confirmed Topo classification",
+            )
+
+        preview = self._source_classification_batch_preview(request, grouped)
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        self._validate_authorization(request.authorization, preview)
+
+        for proposal, target in selected:
+            source_assertion = proposal.proposed_assertion
+            assert source_assertion is not None
+            self._module_catalog.validate_proposed_assertion(
+                ProposedAssertion(
+                    subject_ref=source_assertion.subject_ref,
+                    predicate=f"domain.cashflow/classification/{target}",
+                    object_value=ObjectValue(value_type="classification", value=target),
+                    valid_time=source_assertion.valid_time,
+                    knowledge_type="inferred",
+                    module_data={"source_proposal_ref": proposal.id},
+                ),
+                validated.manifest.modules,
+                (),
+                validated.entities.records,
+            )
+
+        now = self._now()
+        evidence_id = self._id_factory()
+        mutation_id = self._id_factory()
+        generation_id = self._id_factory()
+        confirmation_evidence = UserStatementEvidenceRecord(
+            id=evidence_id,
+            evidence_type="user_statement",
+            recorded_at=now,
+            statement_type="proposal_confirmation",
+            statement={
+                "batch_id": request.batch_id,
+                "source_proposal_ids": [proposal.id for proposal, _ in selected],
+                "mappings": [
+                    mapping.model_dump(mode="json") for mapping in request.mappings
+                ],
+                "reason": request.reason,
+                "authorization": request.authorization.model_dump(mode="json"),
+            },
+        )
+        assertions: list[AssertionRecord] = []
+        replacements: dict[str, ProposalRecord] = {}
+        for proposal, target in selected:
+            source_assertion = proposal.proposed_assertion
+            assert source_assertion is not None
+            assertion_id = self._id_factory()
+            assertions.append(
+                AssertionRecord(
+                    id=assertion_id,
+                    subject_ref=source_assertion.subject_ref,
+                    predicate=f"domain.cashflow/classification/{target}",
+                    object_value=ObjectValue(value_type="classification", value=target),
+                    valid_time=source_assertion.valid_time,
+                    recorded_at=now,
+                    knowledge_type="inferred",
+                    verification_status="confirmed",
+                    provenance=(
+                        *proposal.evidence_refs,
+                        Ref(ref_type="proposal", id=proposal.id),
+                        Ref(ref_type="evidence", id=evidence_id),
+                    ),
+                    supersedes=None,
+                    module_data={"source_proposal_ref": proposal.id},
+                )
+            )
+            replacements[proposal.id] = proposal.model_copy(
+                update={
+                    "status": "corrected",
+                    "decision": ProposalDecision(
+                        outcome="corrected",
+                        actor=request.authorization.authorized_by,
+                        decided_at=request.authorization.authorized_at,
+                        mutation_id=mutation_id,
+                        assertion_id=assertion_id,
+                    ),
+                }
+            )
+        result: JsonObject = {
+            "batch_id": request.batch_id,
+            "classified": len(assertions),
+            "source_proposal_ids": [proposal.id for proposal, _ in selected],
+            "assertion_ids": [assertion.id for assertion in assertions],
+            "evidence_id": evidence_id,
+            "decision_ref": f"decision:{mutation_id}",
+        }
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="source.classify-batch",
+            mutation_id=mutation_id,
+            generation_id=generation_id,
+            assertions=(*validated.assertions.records, *assertions),
+            evidence=(*validated.evidence.records, confirmation_evidence),
+            proposals=tuple(
+                replacements.get(proposal.id, proposal)
+                for proposal in validated.proposals.records
+            ),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
+    @staticmethod
+    def _source_classification_batch_preview(
+        request: SourceClassificationBatchRequest,
+        grouped: list[tuple[str, tuple[ProposalRecord, ...]]],
+    ) -> JsonObject:
+        effects: list[JsonValue] = [
+            {
+                "action": "create_confirmed_classifications",
+                "target_classification": target,
+                "count": len(proposals),
+                "source_proposal_refs": [proposal.id for proposal in proposals],
+            }
+            for target, proposals in grouped
+        ]
+        basis = {
+            "command": "source.classify-batch",
+            "context_id": request.context_id,
+            "expected_generation": request.expected_generation,
+            "batch_id": request.batch_id,
+            "effects": effects,
+        }
+        digest = hashlib.sha256(
+            json.dumps(basis, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {
+            "preview_ref": f"preview:sha256:{digest}",
+            "batch_id": request.batch_id,
+            "effects": effects,
+        }
+
     def confirm_proposal(self, request: ProposalConfirmRequest) -> MutationOutcome:
         validated = self._load_full_existing()
         replay = self._replay(validated.journal, request.operation_id)
@@ -2650,6 +2898,7 @@ class EngineCore:
         request: MutationRequest,
         operation: Literal[
             "source.import",
+            "source.classify-batch",
             "proposal.submit",
             "proposal.confirm",
             "proposal.correct",

@@ -17,6 +17,32 @@ from pydantic import (
 from topo.identifiers import UUID7_PATTERN
 
 JsonObject = dict[str, JsonValue]
+CashflowClassification = Literal[
+    "income",
+    "expense",
+    "internal_transfer",
+    "unclassified",
+    "salary",
+    "holiday_allowance",
+    "self_employment",
+    "pension_payment",
+    "social_benefit",
+    "allowance",
+    "alimony",
+    "interest",
+    "dividend",
+    "housing",
+    "groceries_household",
+    "transport",
+    "healthcare",
+    "insurance",
+    "taxes",
+    "childcare_education",
+    "subscriptions",
+    "leisure",
+    "debt_payment",
+    "other_expense",
+]
 Outcome = Literal[
     "succeeded",
     "no_change",
@@ -344,6 +370,7 @@ class JournalEntry(TopoModel):
         "workflow.respond",
         "proposal.confirm-batch",
         "proposal.reject-batch",
+        "source.classify-batch",
         "rule.activate",
         "context.migrate",
         "context.restore",
@@ -527,6 +554,37 @@ class SourceImportRequest(MutationRequest):
         )
         if len(identities) != len(set(identities)):
             raise ValueError("source import records must have unique source identities")
+        return self
+
+
+class SourceClassificationSelector(TopoModel):
+    category: str
+    rule_version: str | None = None
+    explanation: str | None = None
+    proposal_refs: tuple[UUID7, ...] = ()
+
+    @model_validator(mode="after")
+    def unique_proposal_refs(self) -> SourceClassificationSelector:
+        if len(self.proposal_refs) != len(set(self.proposal_refs)):
+            raise ValueError("source classification proposal_refs must be unique")
+        return self
+
+
+class SourceClassificationMapping(TopoModel):
+    source: SourceClassificationSelector
+    target_classification: CashflowClassification
+
+
+class SourceClassificationBatchRequest(MutationRequest):
+    batch_id: UUID7
+    mappings: tuple[SourceClassificationMapping, ...] = Field(min_length=1)
+    authorization: Authorization | None
+
+    @model_validator(mode="after")
+    def distinct_selectors(self) -> SourceClassificationBatchRequest:
+        selectors = tuple(mapping.source for mapping in self.mappings)
+        if len(selectors) != len(set(selectors)):
+            raise ValueError("source classification selectors must be unique")
         return self
 
 

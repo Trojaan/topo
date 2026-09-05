@@ -289,6 +289,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "contract.describe",
         "contract.schema",
         "source.import",
+        "source.classify-batch",
         "discover.run",
         "proposal.submit",
         "proposal.confirm",

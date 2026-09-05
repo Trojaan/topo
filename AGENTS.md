@@ -9,6 +9,7 @@ context package. It is an engine, not an adviser or a web application.
 - Check the workspace: `scripts/dev-local.sh status`
 - Run all ship gates: `scripts/verify.sh`
 - Inspect CLI contracts: `uv run topo contract describe --json`
+- Know what Topo can do: `docs/capabilities.md`
 - Domain vocabulary: `CONTEXT.md`
 - Documentation map: `docs/index.md`
 

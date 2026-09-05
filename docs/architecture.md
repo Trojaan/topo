@@ -102,6 +102,12 @@ checksum-bound human authorization confirms that identity and imports the source
 records atomically. A previously confirmed external identity always wins on later
 imports; the engine never merges multiple candidates by guesswork.
 
+Bulk source classification is also owned by `EngineCore`. It resolves exact
+selectors against open adapter proposals, validates canonical targets through the
+module catalog, computes the authorization preview, and publishes all confirmed
+assertions plus proposal decisions as one transaction. The CLI only validates and
+translates the `source classify-batch` request.
+
 `context_inventory.py` owns the effect-free `workflow.next` decision module. It
 reads only a validated immutable generation, composes domain inventory projections
 with active analyses, and returns one closed action type. It never publishes.

@@ -731,6 +731,115 @@ def test_source_adapter_imports_normalized_csv_transactions(tmp_path: Path) -> N
     assert "records" not in authorized_request
 
 
+def test_source_classifications_are_confirmed_as_one_canonical_batch(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "classification-batch.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    import_request = source_import_request(
+        initialized,
+        operation_id="0198f1a0-0000-7000-8000-000000000131",
+        adapter_id="adapter.tally",
+        adapter_version="1.0.0",
+        reason="Import classified transactions",
+        records=[
+            {
+                "source_id": "main",
+                "record_id": "salary-1",
+                "booking_date": "2026-07-25",
+                "money": {"amount": "3200.00", "currency": "EUR"},
+                "description": "SALARY ACME",
+                "source_classification": {
+                    "category": "Inkomsten",
+                    "rule_version": "tally-4",
+                    "explanation": "Salaris",
+                },
+            },
+            {
+                "source_id": "main",
+                "record_id": "groceries-1",
+                "booking_date": "2026-07-26",
+                "money": {"amount": "-48.20", "currency": "EUR"},
+                "description": "SUPERMARKET",
+                "source_classification": {
+                    "category": "Eten",
+                    "rule_version": "tally-4",
+                    "explanation": "Boodschappen",
+                },
+            },
+        ],
+    )
+    imported, _ = import_with_authorization(package, import_request)
+    imported_generation = imported["generation_after"]
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": "0198f1a0-0000-7000-8000-000000000132",
+        "context_id": initialized["context_id"],
+        "expected_generation": imported_generation,
+        "actor": {"actor_type": "agent", "actor_id": "local-agent"},
+        "reason": "Translate reviewed Tally groups to Topo classifications",
+        "batch_id": "0198f1a0-0000-7000-8000-000000000133",
+        "mappings": [
+            {
+                "source": {"category": "Inkomsten", "explanation": "Salaris"},
+                "target_classification": "salary",
+            },
+            {
+                "source": {"category": "Eten", "explanation": "Boodschappen"},
+                "target_classification": "groceries_household",
+            },
+        ],
+        "authorization": None,
+    }
+    preview = parse_json(
+        run_topo(
+            "source",
+            "classify-batch",
+            "--package",
+            str(package),
+            "--json",
+            request=request,
+        )
+    )
+    assert preview["outcome"] == "requires_authorization"
+    assert preview["generation_after"] == imported_generation
+    assert [effect["count"] for effect in preview["result"]["effects"]] == [1, 1]
+
+    request["authorization"] = {
+        "preview_ref": preview["result"]["preview_ref"],
+        "authorized_by": {"actor_type": "human", "actor_id": "local-user"},
+        "authorized_at": "2026-08-28T12:30:00+02:00",
+    }
+    classified = parse_json(
+        run_topo(
+            "source",
+            "classify-batch",
+            "--package",
+            str(package),
+            "--json",
+            request=request,
+        )
+    )
+    assert classified["outcome"] == "succeeded"
+    assert classified["result"]["classified"] == 2
+    assert classified["generation_after"] != imported_generation
+
+    _, generation = current_generation(package)
+    assertions = json.loads((generation / "assertions.json").read_text())["records"]
+    assert {
+        assertion["predicate"]
+        for assertion in assertions
+        if assertion["predicate"].startswith("domain.cashflow/classification/")
+    } == {
+        "domain.cashflow/classification/salary",
+        "domain.cashflow/classification/groceries_household",
+    }
+    proposals = json.loads((generation / "proposals.json").read_text())["records"]
+    assert {proposal["status"] for proposal in proposals} == {"corrected"}
+
+
 def test_recurring_discovery_is_effect_free_and_candidates_are_submit_ready(
     tmp_path: Path,
 ) -> None:

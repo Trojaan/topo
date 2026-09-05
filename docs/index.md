@@ -5,6 +5,7 @@ these pages hold the detail.
 
 | Topic | Document |
 | --- | --- |
+| Beschikbare functies en uitvoerbare workflows | [Capabilities](capabilities.md) |
 | Runtime structure, data flow, dependency boundaries | [Architecture](architecture.md) |
 | Domain language, invariants, and safety boundary | [Domain](domain.md) |
 | Environment setup and common commands | [Development](development.md) |

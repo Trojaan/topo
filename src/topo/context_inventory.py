@@ -1000,7 +1000,11 @@ def _change_summary(
         }
         if entry.operation in {"proposal.submit", "workflow.respond"}:
             cast(list[JsonObject], empty["proposed"]).append(item)
-        elif entry.operation in {"proposal.confirm", "proposal.confirm-batch"}:
+        elif entry.operation in {
+            "proposal.confirm",
+            "proposal.confirm-batch",
+            "source.classify-batch",
+        }:
             cast(list[JsonObject], empty["confirmed"]).append(item)
         elif entry.operation == "proposal.correct":
             cast(list[JsonObject], empty["replaced"]).append(item)

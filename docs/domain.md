@@ -18,6 +18,14 @@ evidence and assertions; it never replaces the earlier records. Source
 classifications and explanations remain open proposals until a human confirms
 their financial meaning.
 
+`source classify-batch` is the bounded bulk decision for those open source
+classification proposals. Exact selectors translate reviewed source groups to
+canonical `domain.cashflow/classification/*` meaning. The effect-free preview
+binds every selected proposal and target classification to one human
+authorization; confirmation then publishes all assertions and source-proposal
+decisions atomically in one generation. Overlapping, empty, stale, or already
+classified selections fail as a whole.
+
 `analyze run` with `analysis.realized_monthly_cashflow` reads one explicit,
 half-open calendar month. Confirmed paired transfers are excluded from income and
 expense, while every included posting remains in net movement. Unclassified

@@ -55,6 +55,7 @@ from topo.models import (
     ResponseEnvelope,
     RuleActivateRequest,
     RulePackageRequest,
+    SourceClassificationBatchRequest,
     SourceImportRequest,
     Trace,
     WorkflowNextRequest,
@@ -371,6 +372,8 @@ def _parser() -> argparse.ArgumentParser:
     source_import = source_commands.add_parser("import")
     source_import.add_argument("--package", type=Path, required=True)
     source_import.add_argument("--records-csv", type=Path)
+    source_classify = source_commands.add_parser("classify-batch")
+    source_classify.add_argument("--package", type=Path, required=True)
 
     discover = commands.add_parser("discover")
     discover_commands = discover.add_subparsers(dest="discover_command", required=True)
@@ -718,6 +721,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if command == "source.import":
             outcome = EngineCore(FileSystemStorageAdapter(args.package)).import_source(
                 SourceImportRequest.model_validate_json(
+                    json.dumps(request), strict=True
+                )
+            )
+            _write_json(_mutation_envelope(command, request, outcome))
+            return 0
+        if command == "source.classify-batch":
+            outcome = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).classify_source_proposal_batch(
+                SourceClassificationBatchRequest.model_validate_json(
                     json.dumps(request), strict=True
                 )
             )

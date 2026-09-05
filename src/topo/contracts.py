@@ -17,6 +17,32 @@ from topo.models import (
 SchemaObject = dict[str, object]
 
 CONTRACT_VERSION: Literal["topo.cli/0.1"] = "topo.cli/0.1"
+_CASHFLOW_CLASSIFICATIONS = (
+    "income",
+    "expense",
+    "internal_transfer",
+    "unclassified",
+    "salary",
+    "holiday_allowance",
+    "self_employment",
+    "pension_payment",
+    "social_benefit",
+    "allowance",
+    "alimony",
+    "interest",
+    "dividend",
+    "housing",
+    "groceries_household",
+    "transport",
+    "healthcare",
+    "insurance",
+    "taxes",
+    "childcare_education",
+    "subscriptions",
+    "leisure",
+    "debt_payment",
+    "other_expense",
+)
 COMMANDS = (
     "context.init",
     "workspace.init",
@@ -29,6 +55,7 @@ COMMANDS = (
     "context.compact",
     "context.privacy_scrub",
     "source.import",
+    "source.classify-batch",
     "discover.run",
     "proposal.submit",
     "proposal.confirm",
@@ -54,6 +81,7 @@ MUTATING_COMMANDS = {
     "context.compact",
     "context.privacy_scrub",
     "source.import",
+    "source.classify-batch",
     "proposal.submit",
     "proposal.confirm",
     "proposal.correct",
@@ -81,6 +109,8 @@ def schema_ref(command: str, direction: str) -> str:
             ("proposal.confirm-batch", "response"),
             ("proposal.reject-batch", "request"),
             ("proposal.reject-batch", "response"),
+            ("source.classify-batch", "request"),
+            ("source.classify-batch", "response"),
         }
         else "0.1"
     )
@@ -427,6 +457,40 @@ def _mutation_input(command: str) -> SchemaObject:
             }
         )
         required.extend(["adapter", "records", "authorization"])
+    if command == "source.classify-batch":
+        selector = _closed_object(
+            {
+                "category": {"type": "string"},
+                "rule_version": {"type": ["string", "null"]},
+                "explanation": {"type": ["string", "null"]},
+                "proposal_refs": {
+                    "type": "array",
+                    "uniqueItems": True,
+                    "items": _uuid7(),
+                },
+            },
+            ("category",),
+        )
+        properties.update(
+            {
+                "batch_id": _uuid7(),
+                "mappings": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _closed_object(
+                        {
+                            "source": selector,
+                            "target_classification": {
+                                "enum": list(_CASHFLOW_CLASSIFICATIONS)
+                            },
+                        },
+                        ("source", "target_classification"),
+                    ),
+                },
+                "authorization": {"oneOf": [_authorization(), {"type": "null"}]},
+            }
+        )
+        required.extend(["batch_id", "mappings", "authorization"])
     if command == "rule.activate":
         properties.update(
             {
@@ -1202,6 +1266,41 @@ def _result_schema(command: str) -> SchemaObject:
                         "batch_id",
                         "proposal_ids",
                         "entity_ids",
+                        "assertion_ids",
+                        "evidence_id",
+                        "decision_ref",
+                    ),
+                ),
+            ]
+        }
+    if command == "source.classify-batch":
+        return {
+            "oneOf": [
+                _authorization_preview_schema(),
+                _closed_object(
+                    {
+                        "batch_id": _uuid7(),
+                        "classified": {"type": "integer", "minimum": 1},
+                        "source_proposal_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": _uuid7(),
+                        },
+                        "assertion_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": _uuid7(),
+                        },
+                        "evidence_id": _uuid7(),
+                        "decision_ref": {
+                            "type": "string",
+                            "pattern": f"^decision:{UUID7_PATTERN[1:-1]}$",
+                        },
+                    },
+                    (
+                        "batch_id",
+                        "classified",
+                        "source_proposal_ids",
                         "assertion_ids",
                         "evidence_id",
                         "decision_ref",
