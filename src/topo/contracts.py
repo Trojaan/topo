@@ -474,12 +474,14 @@ def _mutation_input(command: str) -> SchemaObject:
         properties.update(
             {
                 "batch_id": _uuid7(),
+                "replace_confirmed": {"type": "boolean"},
                 "mappings": {
                     "type": "array",
                     "minItems": 1,
                     "items": _closed_object(
                         {
                             "source": selector,
+                            "explanation": {"type": ["string", "null"], "minLength": 1},
                             "target_classification": {
                                 "enum": list(_CASHFLOW_CLASSIFICATIONS)
                             },

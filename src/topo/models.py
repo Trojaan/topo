@@ -573,9 +573,11 @@ class SourceClassificationSelector(TopoModel):
 class SourceClassificationMapping(TopoModel):
     source: SourceClassificationSelector
     target_classification: CashflowClassification
+    explanation: NonEmptyString | None = None
 
 
 class SourceClassificationBatchRequest(MutationRequest):
+    replace_confirmed: bool = False
     batch_id: UUID7
     mappings: tuple[SourceClassificationMapping, ...] = Field(min_length=1)
     authorization: Authorization | None

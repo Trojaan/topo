@@ -9,7 +9,12 @@ from typing import cast
 from pydantic import JsonValue
 
 from topo.canonical_validation import ValidatedPackage
-from topo.models import JsonObject, ProposalRecord
+from topo.models import (
+    JournalEntry,
+    JsonObject,
+    ProposalRecord,
+    UserStatementEvidenceRecord,
+)
 
 
 def _stable_uuid7(*parts: str) -> str:
@@ -238,4 +243,36 @@ def explain_decision(package: ValidatedPackage, proposal: ProposalRecord) -> Jso
     explanation["evidence_refs"] = [
         evidence_refs[item] for item in sorted(evidence_refs)
     ]
+    return explanation
+
+
+def explain_classification_batch(
+    package: ValidatedPackage, entry: JournalEntry
+) -> JsonObject:
+    explanation = _base(
+        package,
+        ref=f"decision:{entry.mutation_id}",
+        ref_type="decision",
+        meaning="source.classify-batch",
+    )
+    evidence = next(
+        (
+            item
+            for item in package.evidence.records
+            if item.id == entry.result.get("evidence_id")
+            and isinstance(item, UserStatementEvidenceRecord)
+        ),
+        None,
+    )
+    explanation["decision"] = entry.model_dump(mode="json")
+    if evidence is not None:
+        explanation["evidence_refs"] = [{"ref_type": "evidence", "id": evidence.id}]
+        explanation["decision"] = evidence.statement
+    assertion_ids = entry.result.get("assertion_ids", [])
+    if isinstance(assertion_ids, list):
+        explanation["assertion_refs"] = [
+            {"ref_type": "assertion", "id": item.id}
+            for item in package.assertions.records
+            if item.id in assertion_ids
+        ]
     return explanation

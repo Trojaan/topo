@@ -839,6 +839,193 @@ def test_source_classifications_are_confirmed_as_one_canonical_batch(
     proposals = json.loads((generation / "proposals.json").read_text())["records"]
     assert {proposal["status"] for proposal in proposals} == {"corrected"}
 
+    from test_realized_cashflow_journey import confirm_assertion
+
+    classified["generation_after"] = confirm_assertion(
+        package,
+        initialized,
+        classified["generation_after"],
+        sequence=900,
+        subject_id=imported["result"]["account_refs"][0]["id"],
+        predicate="domain.parties/household_allocation",
+        evidence_id=imported["result"]["evidence_refs"][0]["id"],
+        start="2026-07-01",
+        end_exclusive="2026-08-01",
+        object_ref=initialized["result"]["household_id"],
+    )
+    original_assertions = assertions
+    _, generation = current_generation(package)
+    original_proposals = json.loads((generation / "proposals.json").read_text())[
+        "records"
+    ]
+    for step, target in enumerate(("unclassified", "transport")):
+        request.update(
+            operation_id=f"0198f1a0-0000-7000-8000-{140 + step:012d}",
+            batch_id=f"0198f1a0-0000-7000-8000-{150 + step:012d}",
+            expected_generation=classified["generation_after"],
+            replace_confirmed=True,
+            authorization=None,
+        )
+        for mapping in request["mappings"]:
+            mapping["target_classification"] = target
+            mapping["explanation"] = "Door gebruiker toegelicht en gecontroleerd"
+        request["replace_confirmed"] = False
+        refused = parse_json(
+            run_topo(
+                "source",
+                "classify-batch",
+                "--package",
+                str(package),
+                "--json",
+                request=request,
+            )
+        )
+        assert refused["outcome"] == "rejected"
+        assert current_generation(package)[0] == request["expected_generation"]
+        request["replace_confirmed"] = True
+        preview = parse_json(
+            run_topo(
+                "source",
+                "classify-batch",
+                "--package",
+                str(package),
+                "--json",
+                request=request,
+            )
+        )
+        assert preview["outcome"] == "requires_authorization"
+        assert (
+            sum(
+                len(effect["superseded_assertion_refs"])
+                for effect in preview["result"]["effects"]
+            )
+            == 2
+        )
+        request["authorization"] = {
+            "preview_ref": preview["result"]["preview_ref"],
+            "authorized_by": {"actor_type": "human", "actor_id": "local-user"},
+            "authorized_at": "2026-08-28T12:30:00+02:00",
+        }
+        request["mappings"][0]["explanation"] = "Gewijzigde toelichting"
+        tampered = parse_json(
+            run_topo(
+                "source",
+                "classify-batch",
+                "--package",
+                str(package),
+                "--json",
+                request=request,
+            )
+        )
+        assert tampered["outcome"] != "succeeded"
+        request["mappings"][0]["explanation"] = (
+            "Door gebruiker toegelicht en gecontroleerd"
+        )
+        classified = parse_json(
+            run_topo(
+                "source",
+                "classify-batch",
+                "--package",
+                str(package),
+                "--json",
+                request=request,
+            )
+        )
+        assert classified["outcome"] == "succeeded"
+        explained = parse_json(
+            run_topo(
+                "explain",
+                "--ref",
+                classified["result"]["decision_ref"],
+                "--package",
+                str(package),
+                "--json",
+            )
+        )
+        assert explained["result"]["decision"]["mappings"][0]["explanation"] == (
+            "Door gebruiker toegelicht en gecontroleerd"
+        )
+        replay = parse_json(
+            run_topo(
+                "source",
+                "classify-batch",
+                "--package",
+                str(package),
+                "--json",
+                request=request,
+            )
+        )
+        assert replay["generation_after"] == classified["generation_after"]
+        _, generation = current_generation(package)
+        assertions = json.loads((generation / "assertions.json").read_text())["records"]
+        assert all(item in assertions for item in original_assertions)
+        assert (
+            json.loads((generation / "proposals.json").read_text())["records"]
+            == original_proposals
+        )
+        superseded = {item["supersedes"] for item in assertions}
+        active = [
+            item
+            for item in assertions
+            if item["predicate"].startswith("domain.cashflow/classification/")
+            and item["id"] not in superseded
+        ]
+        analyzed = parse_json(
+            run_topo(
+                "analyze",
+                "run",
+                "--package",
+                str(package),
+                "--json",
+                request={
+                    "contract_version": "topo.cli/0.1",
+                    "analysis_id": "analysis.realized_monthly_cashflow",
+                    "analysis_contract_version": "0.1",
+                    "context_id": initialized["context_id"],
+                    "analysis_scope": {
+                        "scope_type": "household",
+                        "entity_id": initialized["result"]["household_id"],
+                    },
+                    "as_of_date": "2026-08-01",
+                    "period": {"start_date": "2026-07-01", "end_date": "2026-08-01"},
+                    "reporting_currency": {
+                        "currency": "EUR",
+                        "allowed_rate_assertion_refs": [],
+                    },
+                    "scenario": None,
+                },
+            )
+        )
+        assert analyzed["outcome"] == "succeeded"
+        used = {
+            ref["id"]
+            for component in analyzed["result"]["components"]
+            for ref in component["used_assertion_refs"]
+        }
+        assert not (used & (superseded - {None}))
+        assert {item["id"] for item in active} <= used
+        assert len(active) == 2
+        assert {item["object_value"]["value"] for item in active} == {target}
+        evidence = json.loads((generation / "evidence.json").read_text())["records"]
+        confirmation = next(
+            item
+            for item in evidence
+            if item["id"] == classified["result"]["evidence_id"]
+        )
+        assert confirmation["statement"]["mappings"][0]["explanation"] == (
+            "Door gebruiker toegelicht en gecontroleerd"
+        )
+        verified = parse_json(
+            run_topo(
+                "context",
+                "verify",
+                "--package",
+                str(package),
+                "--json",
+            )
+        )
+        assert verified["outcome"] == "succeeded"
+
 
 def test_recurring_discovery_is_effect_free_and_candidates_are_submit_ready(
     tmp_path: Path,

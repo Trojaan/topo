@@ -106,7 +106,13 @@ Bulk source classification is also owned by `EngineCore`. It resolves exact
 selectors against open adapter proposals, validates canonical targets through the
 module catalog, computes the authorization preview, and publishes all confirmed
 assertions plus proposal decisions as one transaction. The CLI only validates and
-translates the `source classify-batch` request.
+translates the `source classify-batch` request. Explicit `replace_confirmed`
+also selects confirmed/corrected source proposals and links a new classification
+to the unique current classification through `supersedes`. Classification
+lineage may cross predicates within `domain.cashflow/classification/*`;
+other assertion lineage still requires the same predicate. Prior decisions remain
+unchanged. Mapping explanations are stored in checksum-bound authorization
+evidence, and realized cashflow excludes superseded assertions.
 
 `context_inventory.py` owns the effect-free `workflow.next` decision module. It
 reads only a validated immutable generation, composes domain inventory projections

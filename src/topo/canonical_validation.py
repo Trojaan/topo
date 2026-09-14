@@ -708,7 +708,17 @@ def _validate_snapshot(
                 predecessor is None
                 or predecessor.id == assertion.id
                 or predecessor.subject_ref != assertion.subject_ref
-                or predecessor.predicate != assertion.predicate
+                or (
+                    predecessor.predicate != assertion.predicate
+                    and not (
+                        predecessor.predicate.startswith(
+                            "domain.cashflow/classification/"
+                        )
+                        and assertion.predicate.startswith(
+                            "domain.cashflow/classification/"
+                        )
+                    )
+                )
             ):
                 raise PackageIntegrityError("assertion successor lineage is invalid")
 

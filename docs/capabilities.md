@@ -44,8 +44,24 @@ Een request bevat één `batch_id` en één of meer mappings. Iedere mapping sel
 exact op `category` en optioneel op `rule_version` en `explanation`. Gebruik
 `proposal_refs` binnen de selector wanneer slechts een gecontroleerde subset van
 een verder gelijke groep mag worden verwerkt. Selectors mogen niet overlappen en
-iedere selector moet minimaal één open bronvoorstel vinden. Een transactie die al
-een bevestigde Topo-classificatie heeft, laat de volledige batch veilig falen.
+iedere selector moet minimaal één open bronvoorstel vinden. Standaard laat een transactie die al een bevestigde Topo-classificatie heeft de
+volledige batch veilig falen.
+
+Gebruik expliciet `"replace_confirmed": true` op requestniveau om ook bevestigde
+of gecorrigeerde bronvoorstellen te selecteren en hun huidige Topo-classificatie
+te vervangen, bijvoorbeeld `unclassified`. Dezelfde bronselectors en
+`proposal_refs` blijven beschikbaar. Afgewezen en achterhaalde bronvoorstellen
+worden nooit geselecteerd. Meerdere huidige classificaties op dezelfde transactie
+laten de batch falen: de engine kiest niet zelf welk conflicterend feit juist is.
+
+Iedere mapping accepteert een optionele `explanation` naast
+`target_classification`. Dit is de nieuwe menselijke toelichting;
+`source.explanation` blijft uitsluitend een filter op de oorspronkelijke bron.
+De nieuwe toelichting wordt met de mappings in het autorisatiebewijs opgeslagen
+en is aan de preview gebonden. De preview vermeldt `superseded_assertion_refs`.
+Oude assertions en eerdere voorstelbeslissingen blijven intact; de opvolger
+verwijst via `supersedes` naar de vervangen classificatie. Analyses gebruiken
+alleen de huidige classificatie.
 
 ```json
 {

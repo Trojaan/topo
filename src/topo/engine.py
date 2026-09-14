@@ -21,6 +21,7 @@ from topo.errors import (
 )
 from topo.explanations import (
     decode_explanation,
+    explain_classification_batch,
     explain_decision,
     explain_proposal,
     index_analysis,
@@ -228,6 +229,17 @@ class EngineCore:
             if proposal is not None:
                 return explain_proposal(validated, proposal)
         if ref_type == "decision":
+            entry = next(
+                (
+                    item
+                    for item in validated.journal.entries
+                    if item.mutation_id == ref_id
+                    and item.operation == "source.classify-batch"
+                ),
+                None,
+            )
+            if entry is not None:
+                return explain_classification_batch(validated, entry)
             proposal = next(
                 (
                     item
@@ -1819,7 +1831,12 @@ class EngineCore:
             for proposal in validated.proposals.records:
                 proposed = proposal.proposed_assertion
                 if (
-                    proposal.status != "open"
+                    proposal.status
+                    not in (
+                        {"open", "confirmed", "corrected"}
+                        if request.replace_confirmed
+                        else {"open"}
+                    )
                     or proposal.producer.producer_type != "source_adapter"
                     or proposed is None
                     or proposed.predicate != "domain.cashflow/source_classification"
@@ -1848,13 +1865,13 @@ class EngineCore:
                 raise ProposalDecisionError(
                     "SOURCE_CLASSIFICATION_SELECTION_MISMATCH",
                     f"/mappings/{index}/source/proposal_refs",
-                    "every proposal_ref must resolve to an open matching source classification",
+                    "every proposal_ref must resolve to an eligible matching source classification",
                 )
             if not matches:
                 raise ProposalDecisionError(
                     "SOURCE_CLASSIFICATION_SELECTION_EMPTY",
                     f"/mappings/{index}/source",
-                    "source classification selector matches no open proposals",
+                    "source classification selector matches no eligible proposals",
                 )
             overlap = claimed & matched_refs
             if overlap:
@@ -1886,20 +1903,37 @@ class EngineCore:
                 "/mappings",
                 "a transaction may occur only once in a classification batch",
             )
-        existing_classified = {
-            assertion.subject_ref.id
-            for assertion in validated.assertions.records
-            if assertion.verification_status == "confirmed"
-            and assertion.predicate.startswith("domain.cashflow/classification/")
+        superseded = {
+            item.supersedes
+            for item in validated.assertions.records
+            if item.supersedes is not None
         }
-        if existing_classified & set(subject_ids):
-            raise ProposalDecisionError(
-                "SOURCE_CLASSIFICATION_ALREADY_CONFIRMED",
-                "/mappings",
-                "a selected transaction already has a confirmed Topo classification",
-            )
+        prior_by_subject: dict[str, AssertionRecord] = {}
+        selected_subjects = set(subject_ids)
+        for item in validated.assertions.records:
+            if (
+                item.subject_ref.id in selected_subjects
+                and item.id not in superseded
+                and item.verification_status == "confirmed"
+                and item.predicate.startswith("domain.cashflow/classification/")
+            ):
+                if not request.replace_confirmed:
+                    raise ProposalDecisionError(
+                        "SOURCE_CLASSIFICATION_ALREADY_CONFIRMED",
+                        "/mappings",
+                        "a selected transaction already has a confirmed Topo classification",
+                    )
+                if item.subject_ref.id in prior_by_subject:
+                    raise ProposalDecisionError(
+                        "SOURCE_CLASSIFICATION_AMBIGUOUS",
+                        "/mappings",
+                        "a selected transaction has multiple current classifications",
+                    )
+                prior_by_subject[item.subject_ref.id] = item
 
-        preview = self._source_classification_batch_preview(request, grouped)
+        preview = self._source_classification_batch_preview(
+            request, grouped, prior_by_subject
+        )
         if request.authorization is None:
             return self._authorization_required(request, preview)
         self._validate_authorization(request.authorization, preview)
@@ -1961,10 +1995,16 @@ class EngineCore:
                         Ref(ref_type="proposal", id=proposal.id),
                         Ref(ref_type="evidence", id=evidence_id),
                     ),
-                    supersedes=None,
+                    supersedes=(
+                        prior_by_subject[source_assertion.subject_ref.id].id
+                        if source_assertion.subject_ref.id in prior_by_subject
+                        else None
+                    ),
                     module_data={"source_proposal_ref": proposal.id},
                 )
             )
+            if proposal.status != "open":
+                continue
             replacements[proposal.id] = proposal.model_copy(
                 update={
                     "status": "corrected",
@@ -2007,6 +2047,7 @@ class EngineCore:
     def _source_classification_batch_preview(
         request: SourceClassificationBatchRequest,
         grouped: list[tuple[str, tuple[ProposalRecord, ...]]],
+        prior_by_subject: dict[str, AssertionRecord],
     ) -> JsonObject:
         effects: list[JsonValue] = [
             {
@@ -2014,6 +2055,12 @@ class EngineCore:
                 "target_classification": target,
                 "count": len(proposals),
                 "source_proposal_refs": [proposal.id for proposal in proposals],
+                "superseded_assertion_refs": [
+                    prior_by_subject[proposal.proposed_assertion.subject_ref.id].id
+                    for proposal in proposals
+                    if proposal.proposed_assertion is not None
+                    and proposal.proposed_assertion.subject_ref.id in prior_by_subject
+                ],
             }
             for target, proposals in grouped
         ]
@@ -2023,6 +2070,11 @@ class EngineCore:
             "expected_generation": request.expected_generation,
             "batch_id": request.batch_id,
             "effects": effects,
+            "mappings": [
+                mapping.model_dump(mode="json") for mapping in request.mappings
+            ],
+            "replace_confirmed": request.replace_confirmed,
+            "reason": request.reason,
         }
         digest = hashlib.sha256(
             json.dumps(basis, sort_keys=True, separators=(",", ":")).encode()

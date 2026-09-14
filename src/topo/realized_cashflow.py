@@ -121,6 +121,11 @@ def _transactions(
         for item in package.evidence.records
         if isinstance(item, SourceRecordEvidenceRecord) and item.supersedes is not None
     }
+    superseded_assertions = {
+        item.supersedes
+        for item in package.assertions.records
+        if item.supersedes is not None
+    }
     result: list[_Transaction] = []
     for evidence in package.evidence.records:
         if (
@@ -149,6 +154,8 @@ def _transactions(
             item
             for item in package.assertions.records
             if item.subject_ref.id == transaction_id
+            and item.id not in superseded_assertions
+            and item.verification_status == "confirmed"
             and item.knowledge_type != "observed"
             and _active_on(item, source.booking_date)
         )
