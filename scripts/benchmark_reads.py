@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import statistics
 import subprocess
 import sys
@@ -96,12 +97,54 @@ def _measure(arguments: tuple[str, ...], request: dict[str, Any] | None) -> floa
     return time.perf_counter() - started
 
 
+_MEMORY_SHIM = """
+import resource
+import runpy
+import sys
+sys.argv = ['topo', *sys.argv[1:]]
+try:
+    runpy.run_module('topo', run_name='__main__')
+finally:
+    print('__TOPO_PEAK_RSS__=' + str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss), file=sys.stderr)
+"""
+
+
+def _peak_memory_mib(
+    arguments: tuple[str, ...], request: dict[str, Any] | None
+) -> float:
+    completed = subprocess.run(
+        [sys.executable, "-c", _MEMORY_SHIM, *arguments, "--json"],
+        cwd=PROJECT_ROOT,
+        input=None if request is None else json.dumps(request),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stdout or completed.stderr)
+    marker = "__TOPO_PEAK_RSS__="
+    rss = next(
+        int(line.removeprefix(marker))
+        for line in completed.stderr.splitlines()
+        if line.startswith(marker)
+    )
+    return rss / (1024 * 1024 if platform.system() == "Darwin" else 1024)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--records", type=int, default=7_500)
     parser.add_argument("--generations", type=int, default=6)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--budget-seconds", type=float, default=2.0)
+    parser.add_argument(
+        "--memory", action="store_true", help="measure peak RSS for each CLI read"
+    )
+    parser.add_argument(
+        "--include-discover",
+        action="store_true",
+        help="also measure recurring discovery",
+    )
     args = parser.parse_args()
     if args.records < 1 or args.generations < 2 or args.runs < 1:
         parser.error(
@@ -143,6 +186,16 @@ def main() -> int:
                 analysis_request,
             ),
         }
+        if args.include_discover:
+            cases["discover.run"] = (
+                ("discover", "run", "--package", str(package), "--compact"),
+                {
+                    "contract_version": "topo.cli/0.1",
+                    "context_id": fixture["context_id"],
+                    "analysis_scope": scope,
+                    "as_of_date": "2026-09-04",
+                },
+            )
         failed = False
         for name, (arguments, request) in cases.items():
             _measure(arguments, request)
@@ -152,6 +205,10 @@ def main() -> int:
                 f"{name}: median={median:.3f}s "
                 f"runs={','.join(f'{timing:.3f}' for timing in timings)}"
             )
+            if args.memory:
+                print(
+                    f"{name}: peak_rss={_peak_memory_mib(arguments, request):.1f} MiB"
+                )
             failed = failed or median >= args.budget_seconds
         return 1 if failed else 0
 

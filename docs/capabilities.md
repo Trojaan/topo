@@ -16,6 +16,7 @@ veronderstelt geen netwerk of externe credentials.
 | --- | --- | --- |
 | Werkmap en contextpakket maken | `topo init`, `context init` | Nieuwe lokale context |
 | Identiteit en integriteit controleren | `context status`, `context verify` | Alleen lezen |
+| Huidige context compact samenvatten | `context summary --as-of DATE` | Aantallen, bekende saldi en actuele diagnostics |
 | Context migreren, herstellen, bewaren of scrubben | `context migrate`, `restore`, `compact`, `privacy-scrub` | Nieuwe gecontroleerde generatie; scrub herschrijft expliciet historie |
 | Letterlijke brontransacties importeren | `source import` | Preview, daarna geautoriseerde generatie met bewijs en open bronclassificaties |
 | Bronclassificaties in bulk naar Topo vertalen | `source classify-batch` | Preview, daarna één generatie met alle bevestigde Topo-classificaties |
@@ -26,6 +27,7 @@ veronderstelt geen netwerk of externe credentials.
 | Veilige declaratieve regels beheren | `rule validate`, `preview`, `activate` | Alleen activatie muteert na autorisatie |
 | Herkomst van een uitkomst tonen | `explain --ref` | Alleen lezen |
 | Contracten ontdekken | `contract describe`, `contract schema` | Alleen lezen |
+| Canonieke recordschema's ontdekken | `contract record-schema` | Schema's van `topo.context/0.2` |
 
 Alle mutaties zijn idempotent via `operation_id`, bewaken gelijktijdigheid met
 `expected_generation` en publiceren atomair. Een autorisatieplichtig commando

@@ -57,6 +57,24 @@ with:
 uv run topo context verify --package /tmp/example-finances/context.topo --json
 ```
 
+For a short current view, choose an explicit date:
+
+```bash
+uv run topo context summary --package /tmp/example-finances/context.topo --as-of 2026-09-29 --json
+```
+
+The result contains entity and current confirmed assertion counts, the number of
+open proposals, known account balances, and net-worth diagnostics per household.
+Missing or conflicting balances have no amount. A diagnostic `explain_ref` is
+opened with `topo explain --ref <ref_type>:<id>`; old derived explanation files
+remain historical and are not treated as diagnostics for the current generation.
+
+Every command that consumes JSON accepts `--request PATH` or stdin. Use
+`topo <group> <command> --help` for the exact contract ID and transport; use
+`topo contract describe --json` for the complete CLI-to-contract mapping.
+`contract describe` and `contract schema` describe the CLI itself and do not
+need `--package`. With `--json`, usage errors include `INVALID_USAGE` and a hint.
+
 The result reports the current generation plus the numbers of retained
 generations and raw evidence records checked. Mutating commands perform this
 full-history validation automatically.
@@ -100,6 +118,12 @@ contains `context_id`, `analysis_scope`, and `as_of_date`:
 uv run topo discover run --package /tmp/example.topo --request /tmp/discover.json --json
 ```
 
+Use `--compact --json` to omit the embedded proposal and reference lists, or
+`--table` for a readable candidate table. The compact field
+`projected_next_period` predicts the next occurrence; discovery only reads
+source transactions on or before the explicit `as_of_date`. Use the full JSON
+view when copying a selected candidate's `proposal` into `proposal submit`.
+
 The response keeps `generation_before` and `generation_after` equal. To retain a
 selected candidate, copy its `proposal` object into an explicit `proposal submit`
 request.
@@ -112,6 +136,24 @@ reporting currency:
 ```bash
 uv run topo analyze run --package /tmp/example.topo --request /tmp/analyze.json --json
 ```
+
+Use `--compact --json` for component statuses, values, diagnostics and domain
+counts without assertion-ref lists; omit `--compact` for the complete trace.
+When the package has one household, these shorter forms derive the context ID,
+household scope and fixed analysis version. The date is always explicit; provide
+`--scope HOUSEHOLD_ID` if the package has multiple households:
+
+```bash
+uv run topo analyze run --package /tmp/example.topo --analysis context_inventory --as-of 2026-09-29 --compact --json
+uv run topo discover run --package /tmp/example.topo --as-of 2026-09-29 --compact --json
+uv run topo workflow next --package /tmp/example.topo --as-of 2026-09-29 --json
+```
+
+The analysis shortcut accepts `context_inventory`, `net_worth`,
+`normalized_monthly_cashflow`, and `realized_monthly_cashflow`. For realized
+cashflow the month containing `--as-of` becomes the half-open period. Scenario
+comparison still uses an explicit JSON request because its assumptions and
+reporting currency must be supplied.
 
 The source import result exposes stable `account_refs`. Confirm household
 allocation and `domain.accounts/transaction_coverage` assertions on those account
@@ -194,6 +236,107 @@ The response repeats the used generation, CLI and analysis contract versions,
 module versions, assertion and evidence refs, requirements, assumptions,
 calculation steps, unrounded intermediates, and rounding. Unknown or damaged
 derived references return an explicit diagnostic with an empty result.
+
+## Canonical record schemas
+
+`topo contract record-schema entities|assertions|evidence|proposals --json`
+returns the exact JSON Schema for one `topo.context/0.2` collection. A collection
+has `schema_version` and `records`. An assertion indexes its subject with
+`subject_ref.id`; it carries either `object_ref` or `object_value`, never both.
+For money, `object_value` has `value_type: "money"` and a `value` object such as
+`{"amount":"-5.00","currency":"EUR"}`. `valid_time` records when a fact
+applies, `recorded_at` when it entered Topo, `verification_status` whether it is
+confirmed or unverifiable, `provenance` its evidence, and `supersedes` its
+predecessor. Corrections add a successor rather than editing the old assertion.
+
+## Synthetic end-to-end CLI example
+
+This example uses `/tmp/topo-demo.topo` and invented records. Create a package,
+then read its context and generation IDs from the JSON result:
+
+```bash
+uv run topo context init --package /tmp/topo-demo.topo --json > /tmp/topo-init.json
+uv run topo context summary --package /tmp/topo-demo.topo --as-of 2026-08-31 --json
+```
+
+Write `/tmp/topo-import.json` with `contract_version: "topo.cli/0.1"`, a fresh
+UUIDv7 `operation_id`, `context_id` and `expected_generation` from
+`/tmp/topo-init.json`, `actor` set to a source adapter, `authorization: null`,
+and one invented source record such as:
+
+```json
+{"source_id":"demo-account","record_id":"demo-1","booking_date":"2026-08-31","money":{"amount":"-12.50","currency":"EUR"},"description":"Synthetic groceries"}
+```
+
+Get the complete import request shape with
+`topo contract schema source.import --json`. Preview, have a person authorize the
+returned `preview_ref`, and rerun **the same request** with its `authorization`
+filled; no import occurs before that authorization:
+
+```bash
+uv run topo source import --package /tmp/topo-demo.topo --request /tmp/topo-import.json --json
+uv run topo analyze run --package /tmp/topo-demo.topo --analysis context_inventory --as-of 2026-08-31 --compact --json
+uv run topo discover run --package /tmp/topo-demo.topo --as-of 2026-08-31 --table
+uv run topo workflow next --package /tmp/topo-demo.topo --as-of 2026-08-31 --json
+```
+
+Discovery needs enough dated observations to propose a recurring pattern. If a
+candidate appears, retrieve the full JSON result, copy its `proposal` into a
+versioned `proposal.submit` request with a fresh operation ID and current
+generation, then call `proposal submit`. Preview and have a person authorize a
+`proposal confirm` request before repeating it with the returned `preview_ref`.
+This is the same human decision boundary as source import.
+
+For a `workflow.next` action whose `command` is `workflow.respond`, copy its
+`request_template` to `/tmp/topo-answer.json`. For an accounts question, this is
+the user-owned part of the response, validated against its `user_input_schema`:
+
+```json
+{"coverage":"complete","items":[{"item_id":"01991a00-0000-7000-8000-000000000001","label":"Demo account","entity_type":"account","classification":"payment_account","money":{"amount":"1250.25","currency":"EUR"},"household_share":"1","source":{"adapter_id":"demo-adapter","source_id":"demo-account"}}]}
+```
+
+Set those `coverage` and `items` paths in the copied template, plus only the
+declared agent input paths (`actor.actor_id` and the producer ID/version). Submit
+with `topo workflow respond --package /tmp/topo-demo.topo --request
+/tmp/topo-answer.json --json`. This creates open proposals. Call `workflow next`
+again, preview and authorize its `proposal.confirm-batch` action, then repeat
+until the next action requests more user information or reports no remaining
+action. An older account-balance action may instead say `proposal.submit`; use
+its own `request_template` and `user_input_schema` in the same way.
+
+For clarity, a *filled* `workflow.respond` template for the same invented
+accounts question looks like this. The action, context, generation and household
+IDs below are illustrative: copy those four values from the actual
+`workflow.next` output instead of reusing them literally.
+
+```json
+{
+  "contract_version": "topo.cli/0.1",
+  "operation_id": "01991a00-0000-7000-8000-000000000010",
+  "context_id": "01991a00-0000-7000-8000-000000000011",
+  "expected_generation": "01991a00-0000-7000-8000-000000000012",
+  "actor": {"actor_type": "agent", "actor_id": "local-agent"},
+  "reason": "Answer basis-context action 01991a00-0000-7000-8000-000000000010",
+  "workflow_response": {
+    "action_id": "01991a00-0000-7000-8000-000000000010",
+    "response_type": "context_inventory",
+    "section_id": "accounts",
+    "analysis_scope": {"scope_type": "household", "entity_id": "01991a00-0000-7000-8000-000000000013"},
+    "as_of_date": "2026-08-31",
+    "producer": {"producer_type": "agent", "producer_id": "local-agent", "producer_version": "0.1.0"},
+    "coverage": "complete",
+    "items": [{
+      "item_id": "01991a00-0000-7000-8000-000000000001",
+      "label": "Demo account",
+      "entity_type": "account",
+      "classification": "payment_account",
+      "money": {"amount": "1250.25", "currency": "EUR"},
+      "household_share": "1",
+      "source": {"adapter_id": "demo-adapter", "source_id": "demo-account"}
+    }]
+  }
+}
+```
 
 Never use real financial data in tests or committed fixtures.
 

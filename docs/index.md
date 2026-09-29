@@ -10,6 +10,7 @@ these pages hold the detail.
 | Domain language, invariants, and safety boundary | [Domain](domain.md) |
 | Environment setup and common commands | [Development](development.md) |
 | Test layers, e2e evidence, and ship gate | [Testing](testing.md) |
+| CLI-verbeteringen en voortgang per sessie | [CLI-roadmap](cli-usability-roadmap.md) |
 
 `CONTEXT.md` is the canonical Dutch glossary. The material under `.scratch/` is
 design history: useful for rationale, but it does not override code, tests, or

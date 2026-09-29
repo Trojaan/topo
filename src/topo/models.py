@@ -982,6 +982,7 @@ class MutationOutcome(TopoModel):
 
 class CommandDescriptor(TopoModel):
     command: NonEmptyString
+    cli_command: NonEmptyString
     input_schema_ref: NonEmptyString
     output_schema_ref: NonEmptyString
 

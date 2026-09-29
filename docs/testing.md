@@ -21,6 +21,10 @@ status, workflow-next, and net-worth analysis to remain below two seconds:
 uv run python scripts/benchmark_reads.py
 ```
 
+Add `--memory` to report peak resident memory per read process, and
+`--include-discover` to measure compact recurring discovery as well. These runs
+use generated synthetic records and leave no financial package behind.
+
 The fixture is deleted after the run and never contains personal financial data.
 Keep this benchmark separate from the ordinary correctness gate because building
 the large immutable history is intentionally expensive.

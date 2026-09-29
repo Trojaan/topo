@@ -27,6 +27,236 @@ def parse_json(process: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     return value
 
 
+def test_cli_help_and_usage_errors_are_discoverable() -> None:
+    described = parse_json(run_topo("contract", "describe", "--json"))
+    commands = {item["command"]: item for item in described["result"]["commands"]}
+    assert (
+        commands["context.privacy_scrub"]["cli_command"] == "topo context privacy-scrub"
+    )
+    assert "package-independent" in run_topo("contract", "describe", "--help").stdout
+    assert "--request PATH" in run_topo("workflow", "respond", "--help").stdout
+    assert (
+        "Contract ID: workflow.respond"
+        in run_topo("workflow", "respond", "--help").stdout
+    )
+
+    invalid = run_topo("analyze", "run", "--package", "unused.topo", "{}", "--json")
+    assert invalid.returncode == 2
+    body = parse_json(invalid)
+    assert body["command"] == "analyze.run"
+    assert body["diagnostics"][0]["code"] == "INVALID_USAGE"
+    assert "--request PATH" in body["diagnostics"][0]["params"]["hint"]
+    missing_path = run_topo(
+        "workflow", "respond", "--package", "unused.topo", "--request", "--json"
+    )
+    assert missing_path.returncode == 2
+    assert parse_json(missing_path)["diagnostics"][0]["code"] == "INVALID_USAGE"
+
+
+def test_context_summary_uses_current_generation_and_explains_blockers(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "summary.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    generation = initialized["generation_after"]
+    summary = run_topo(
+        "context",
+        "summary",
+        "--package",
+        str(package),
+        "--as-of",
+        "2026-09-29",
+        "--json",
+    )
+    assert summary.returncode == 0, summary.stderr
+    body = parse_json(summary)
+    result = body["result"]
+    assert body["generation_before"] == body["generation_after"] == generation
+    assert result["entity_counts"] == {"context": 1, "person": 1, "household": 1}
+    assert result["account_balances"] == []
+    assert result["diagnostics"][0]["code"] == "MISSING_NET_WORTH_INPUT"
+    assert "used_assertion_refs" not in json.dumps(result)
+    ref = result["diagnostics"][0]["explain_ref"]
+    explained = run_topo(
+        "explain",
+        "--package",
+        str(package),
+        "--ref",
+        f"{ref['ref_type']}:{ref['id']}",
+        "--json",
+    )
+    assert explained.returncode == 0, explained.stderr
+    assert parse_json(explained)["result"]["generation_id"] == generation
+
+    import_request = {
+        "contract_version": "topo.cli/0.1",
+        "operation_id": "01991a00-0000-7000-8000-000000000091",
+        "context_id": initialized["context_id"],
+        "expected_generation": generation,
+        "actor": {"actor_type": "source_adapter", "actor_id": "demo-adapter"},
+        "reason": "Synthetic account for summary test",
+        "adapter": {"adapter_id": "demo-adapter", "adapter_version": "0.1.0"},
+        "records": [
+            {
+                "source_id": "demo-account",
+                "record_id": "demo-1",
+                "booking_date": "2026-09-28",
+                "money": {"amount": "-5.00", "currency": "EUR"},
+                "description": "Synthetic transaction",
+            }
+        ],
+        "authorization": None,
+    }
+    preview = parse_json(
+        run_topo(
+            "source",
+            "import",
+            "--package",
+            str(package),
+            "--json",
+            request=import_request,
+        )
+    )
+    import_request["authorization"] = {
+        "preview_ref": preview["result"]["preview_ref"],
+        "authorized_by": {"actor_type": "human", "actor_id": "test-user"},
+        "authorized_at": "2026-09-29T12:00:00+02:00",
+    }
+    imported = parse_json(
+        run_topo(
+            "source",
+            "import",
+            "--package",
+            str(package),
+            "--json",
+            request=import_request,
+        )
+    )
+    newer = parse_json(
+        run_topo(
+            "context",
+            "summary",
+            "--package",
+            str(package),
+            "--as-of",
+            "2026-09-29",
+            "--json",
+        )
+    )
+    assert newer["result"]["generation_id"] == imported["generation_after"]
+    assert newer["result"]["account_balances"] == [
+        {
+            "account_id": imported["result"]["account_refs"][0]["id"],
+            "status": "missing",
+        }
+    ]
+
+
+def test_canonical_record_schemas_are_discoverable() -> None:
+    for record_type in ("entities", "assertions", "evidence", "proposals"):
+        response = run_topo("contract", "record-schema", record_type, "--json")
+        assert response.returncode == 0, response.stderr
+        result = parse_json(response)["result"]
+        assert result["context_schema_version"] == "topo.context/0.2"
+        assert result["schema"]["properties"]["schema_version"] == {
+            "const": "topo.context/0.2"
+        }
+        assert result["schema"]["properties"]["records"]["items"]
+
+
+def test_compact_analysis_and_discovery_views(tmp_path: Path) -> None:
+    package = tmp_path / "views.topo"
+    initialized = parse_json(
+        run_topo("context", "init", "--package", str(package), "--json")
+    )
+    request = {
+        "contract_version": "topo.cli/0.1",
+        "context_id": initialized["context_id"],
+        "analysis_scope": {
+            "scope_type": "household",
+            "entity_id": initialized["result"]["household_id"],
+        },
+        "as_of_date": "2026-09-29",
+    }
+    analysis = run_topo(
+        "analyze",
+        "run",
+        "--package",
+        str(package),
+        "--compact",
+        "--json",
+        request={
+            **request,
+            "analysis_id": "analysis.context_inventory",
+            "analysis_contract_version": "0.1",
+            "period": None,
+            "scenario": None,
+        },
+    )
+    assert analysis.returncode == 0, analysis.stderr
+    compact = parse_json(analysis)["result"]
+    assert compact["view"] == "compact"
+    assert "inventory_steps" not in compact
+    assert "used_assertion_refs" not in json.dumps(compact)
+
+    discovery = run_topo(
+        "discover",
+        "run",
+        "--package",
+        str(package),
+        "--compact",
+        "--json",
+        request=request,
+    )
+    assert discovery.returncode == 0, discovery.stderr
+    assert parse_json(discovery)["result"]["view"] == "compact"
+    table = run_topo(
+        "discover", "run", "--package", str(package), "--table", request=request
+    )
+    assert table.returncode == 0, table.stderr
+    assert "PROJECTED NEXT PERIOD" in table.stdout
+
+    shorthand = run_topo(
+        "analyze",
+        "run",
+        "--package",
+        str(package),
+        "--analysis",
+        "context_inventory",
+        "--as-of",
+        "2026-09-29",
+        "--compact",
+        "--json",
+    )
+    assert shorthand.returncode == 0, shorthand.stderr
+    assert (
+        parse_json(shorthand)["result"]["analysis_id"] == "analysis.context_inventory"
+    )
+    shorthand_discovery = run_topo(
+        "discover",
+        "run",
+        "--package",
+        str(package),
+        "--as-of",
+        "2026-09-29",
+        "--compact",
+        "--json",
+    )
+    assert shorthand_discovery.returncode == 0, shorthand_discovery.stderr
+    shorthand_workflow = run_topo(
+        "workflow",
+        "next",
+        "--package",
+        str(package),
+        "--as-of",
+        "2026-09-29",
+        "--json",
+    )
+    assert shorthand_workflow.returncode == 0, shorthand_workflow.stderr
+
+
 def test_user_discovers_contract_and_publishes_first_context(tmp_path: Path) -> None:
     described = run_topo("contract", "describe", "--json")
     assert described.returncode == 0, described.stderr

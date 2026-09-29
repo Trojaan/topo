@@ -1073,21 +1073,22 @@ def test_recurring_discovery_is_effect_free_and_candidates_are_submit_ready(
     generation_before, generation_path = current_generation(package)
     proposals_before = (generation_path / "proposals.json").read_bytes()
 
+    discovery_request = {
+        "contract_version": "topo.cli/0.1",
+        "context_id": initialized["context_id"],
+        "analysis_scope": {
+            "scope_type": "household",
+            "entity_id": initialized["result"]["household_id"],
+        },
+        "as_of_date": "2026-08-01",
+    }
     discovered_process = run_topo(
         "discover",
         "run",
         "--package",
         str(package),
         "--json",
-        request={
-            "contract_version": "topo.cli/0.1",
-            "context_id": initialized["context_id"],
-            "analysis_scope": {
-                "scope_type": "household",
-                "entity_id": initialized["result"]["household_id"],
-            },
-            "as_of_date": "2026-08-01",
-        },
+        request=discovery_request,
     )
 
     assert discovered_process.returncode == 0, discovered_process.stderr
@@ -1110,6 +1111,32 @@ def test_recurring_discovery_is_effect_free_and_candidates_are_submit_ready(
     assert [item["code"] for item in discovered["result"]["attention_items"]] == [
         "INSUFFICIENT_PATTERN_HISTORY"
     ]
+    compact_process = run_topo(
+        "discover",
+        "run",
+        "--package",
+        str(package),
+        "--compact",
+        "--json",
+        request=discovery_request,
+    )
+    assert compact_process.returncode == 0, compact_process.stderr
+    compact_candidate = parse_json(compact_process)["result"]["candidates"][0]
+    assert compact_candidate["frequency"] == "monthly"
+    assert compact_candidate["transaction_count"] == 3
+    assert compact_candidate["projected_next_period"]["start_date"] > "2026-08-01"
+    assert "proposal" not in compact_candidate
+    table_process = run_topo(
+        "discover",
+        "run",
+        "--package",
+        str(package),
+        "--table",
+        request=discovery_request,
+    )
+    assert table_process.returncode == 0, table_process.stderr
+    assert "monthly" in table_process.stdout
+    assert "PROJECTED NEXT PERIOD" in table_process.stdout
 
     submitted = parse_json(
         run_topo(

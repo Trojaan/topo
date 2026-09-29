@@ -47,9 +47,11 @@ COMMANDS = (
     "context.init",
     "workspace.init",
     "context.status",
+    "context.summary",
     "context.verify",
     "contract.describe",
     "contract.schema",
+    "contract.record_schema",
     "context.migrate",
     "context.restore",
     "context.compact",
@@ -71,6 +73,18 @@ COMMANDS = (
     "rule.activate",
     "explain",
 )
+
+CLI_COMMANDS = {
+    command: "topo "
+    + " ".join(
+        ("init",)
+        if command == "workspace.init"
+        else ("explain",)
+        if command == "explain"
+        else (command.split(".")[0], command.split(".", 1)[1].replace("_", "-"))
+    )
+    for command in COMMANDS
+}
 SCHEMA_COMMANDS = (
     *COMMANDS,
     "validate",
@@ -111,6 +125,11 @@ def schema_ref(command: str, direction: str) -> str:
             ("proposal.reject-batch", "response"),
             ("source.classify-batch", "request"),
             ("source.classify-batch", "response"),
+            ("contract.describe", "response"),
+            ("contract.schema", "request"),
+            ("contract.schema", "response"),
+            ("analyze.run", "response"),
+            ("discover.run", "response"),
         }
         else "0.1"
     )
@@ -742,9 +761,17 @@ def input_schema(command: str) -> SchemaObject:
     elif command == "workspace.init":
         properties["directory"] = {"type": "string", "minLength": 1}
         required.append("directory")
-    elif command in {"context.status", "context.verify"}:
+    elif command == "contract.record_schema":
+        properties["record_type"] = {
+            "enum": ["entities", "assertions", "evidence", "proposals"]
+        }
+        required.append("record_type")
+    elif command in {"context.status", "context.verify", "context.summary"}:
         properties["package"] = {"type": "string", "minLength": 1}
         required.append("package")
+        if command == "context.summary":
+            properties["as_of_date"] = {"type": "string", "format": "date"}
+            required.append("as_of_date")
     elif command == "discover.run":
         properties.update(
             {
@@ -954,6 +981,60 @@ def _result_schema(command: str) -> SchemaObject:
                 "modules",
             ),
         )
+    if command == "context.summary":
+        counts = {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 0},
+        }
+        balance = _closed_object(
+            {
+                "account_id": deepcopy(uuid7),
+                "status": {"enum": ["missing", "conflicting", "confirmed"]},
+                "as_of_date": {"type": "string", "format": "date"},
+                "money": _money(),
+            },
+            ("account_id", "status"),
+        )
+        diagnostic = _closed_object(
+            {
+                "household_id": deepcopy(uuid7),
+                "component_id": {"type": "string"},
+                "severity": {"enum": ["error", "warning"]},
+                "code": {"type": "string"},
+                "message_key": {"type": "string"},
+                "explain_ref": {"oneOf": [_ref(("diagnostic",)), {"type": "null"}]},
+            },
+            (
+                "household_id",
+                "component_id",
+                "severity",
+                "code",
+                "message_key",
+                "explain_ref",
+            ),
+        )
+        return _closed_object(
+            {
+                "context_id": deepcopy(uuid7),
+                "generation_id": deepcopy(uuid7),
+                "as_of_date": {"type": "string", "format": "date"},
+                "entity_counts": counts,
+                "assertion_counts": counts,
+                "open_proposal_count": {"type": "integer", "minimum": 0},
+                "account_balances": {"type": "array", "items": balance},
+                "diagnostics": {"type": "array", "items": diagnostic},
+            },
+            (
+                "context_id",
+                "generation_id",
+                "as_of_date",
+                "entity_counts",
+                "assertion_counts",
+                "open_proposal_count",
+                "account_balances",
+                "diagnostics",
+            ),
+        )
     if command == "context.verify":
         return _closed_object(
             {
@@ -1029,11 +1110,13 @@ def _result_schema(command: str) -> SchemaObject:
                         "additionalProperties": False,
                         "required": [
                             "command",
+                            "cli_command",
                             "input_schema_ref",
                             "output_schema_ref",
                         ],
                         "properties": {
                             "command": {"enum": list(COMMANDS)},
+                            "cli_command": {"type": "string"},
                             "input_schema_ref": {"type": "string"},
                             "output_schema_ref": {"type": "string"},
                         },
@@ -1060,6 +1143,17 @@ def _result_schema(command: str) -> SchemaObject:
                 "output_schema": {"type": "object"},
             },
         }
+    if command == "contract.record_schema":
+        return _closed_object(
+            {
+                "record_type": {
+                    "enum": ["entities", "assertions", "evidence", "proposals"]
+                },
+                "context_schema_version": {"const": "topo.context/0.2"},
+                "schema": {"type": "object"},
+            },
+            ("record_type", "context_schema_version", "schema"),
+        )
     if command == "source.import":
         return _closed_object(
             {
@@ -1174,13 +1268,44 @@ def _result_schema(command: str) -> SchemaObject:
                 "related_refs",
             ),
         )
-        return _closed_object(
+        full_result = _closed_object(
             {
                 "candidates": {"type": "array", "items": candidate},
                 "attention_items": {"type": "array", "items": attention},
             },
             ("candidates", "attention_items"),
         )
+        compact_candidate = _closed_object(
+            {
+                "candidate_id": {"type": "string"},
+                "frequency": {"type": "string"},
+                "direction": {"enum": ["inflow", "outflow"]},
+                "projected_next_period": expected_period,
+                "money": {"oneOf": [_money(), {"type": "null"}]},
+                "amount_range": {"oneOf": [amount_range, {"type": "null"}]},
+                "score": {"type": "string"},
+                "transaction_count": {"type": "integer", "minimum": 0},
+            },
+            (
+                "candidate_id",
+                "frequency",
+                "direction",
+                "projected_next_period",
+                "money",
+                "amount_range",
+                "score",
+                "transaction_count",
+            ),
+        )
+        compact_result = _closed_object(
+            {
+                "view": {"const": "compact"},
+                "candidates": {"type": "array", "items": compact_candidate},
+                "attention_items": {"type": "array", "items": {"type": "object"}},
+            },
+            ("view", "candidates", "attention_items"),
+        )
+        return {"oneOf": [full_result, compact_result]}
     if command == "proposal.submit":
         return {
             "oneOf": [
@@ -1639,7 +1764,43 @@ def _result_schema(command: str) -> SchemaObject:
                 "delta",
             ),
         )
-        return {"oneOf": [ordinary_result, scenario_result]}
+        compact_component = _closed_object(
+            {
+                "component_id": {"type": "string"},
+                "status": {"enum": ["complete", "provisional", "unavailable"]},
+                "value": _money(),
+                "minimum_value": _money(),
+                "maximum_value": _money(),
+                "expected_value": _money(),
+                "next_question": {"type": ["string", "null"]},
+                "explain_ref": _ref(("analysis_component",)),
+                "blockers": {"type": "array", "items": {"type": "object"}},
+                "warnings": {"type": "array", "items": {"type": "object"}},
+            },
+            ("component_id", "status", "explain_ref", "blockers", "warnings"),
+        )
+        compact_view = {"type": "object", "additionalProperties": compact_component}
+        compact_result = _closed_object(
+            {
+                **metadata,
+                "view": {"const": "compact"},
+                "components": {"type": "array", "items": compact_component},
+                "domain_counts": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {"domain_id": {"type": "string"}, "count": {"type": "integer"}},
+                        ("domain_id", "count"),
+                    ),
+                },
+                "scenario_id": _uuid7(),
+                "knowledge_type": {"const": "projected"},
+                "baseline": compact_view,
+                "scenario": compact_view,
+                "delta": compact_view,
+            },
+            (*metadata_required, "view"),
+        )
+        return {"oneOf": [ordinary_result, scenario_result, compact_result]}
     if command == "explain":
         return _closed_object(
             {
@@ -1980,6 +2141,7 @@ def describe_result() -> JsonObject:
             commands=tuple(
                 CommandDescriptor(
                     command=command,
+                    cli_command=CLI_COMMANDS[command],
                     input_schema_ref=schema_ref(command, "request"),
                     output_schema_ref=schema_ref(command, "response"),
                 )

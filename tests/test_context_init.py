@@ -165,13 +165,15 @@ def test_user_can_discover_commands_and_schema_validated_responses(
     discovery = json.loads(described.stdout)
     assert discovery["outcome"] == "succeeded"
     assert discovery["result"]["supported_contract_versions"] == ["topo.cli/0.1"]
-    assert [command["command"] for command in discovery["result"]["commands"]][:6] == [
+    assert [command["command"] for command in discovery["result"]["commands"]][:8] == [
         "context.init",
         "workspace.init",
         "context.status",
+        "context.summary",
         "context.verify",
         "contract.describe",
         "contract.schema",
+        "contract.record_schema",
     ]
 
     schemas: dict[str, dict[str, Any]] = {}
@@ -281,6 +283,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "context.init",
         "workspace.init",
         "context.status",
+        "context.summary",
         "context.verify",
         "context.migrate",
         "context.restore",
@@ -288,6 +291,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "context.privacy_scrub",
         "contract.describe",
         "contract.schema",
+        "contract.record_schema",
         "source.import",
         "source.classify-batch",
         "discover.run",
@@ -313,6 +317,15 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         assert available.returncode == 0, available.stderr
         schema = json.loads(available.stdout)["result"]
         assert schema["command"] == command
+
+
+def test_documented_workflow_response_example_matches_public_schema() -> None:
+    documentation = (PROJECT_ROOT / "docs" / "development.md").read_text(
+        encoding="utf-8"
+    )
+    example = documentation.split("a *filled* `workflow.respond` template", 1)[1]
+    payload = example.split("```json\n", 1)[1].split("\n```", 1)[0]
+    validate_request("workflow.respond", cast(JsonObject, json.loads(payload)))
 
 
 def test_contract_validation_enforces_date_formats() -> None:

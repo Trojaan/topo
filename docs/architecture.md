@@ -24,6 +24,9 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   transaction boundary.
 - `context_inventory.py` evaluates goal-bound requirements against validated
   context and selects typed follow-up actions without publishing a generation.
+- `context_summary.py` projects current confirmed counts and balances and
+  current-generation net-worth diagnostics from validated context. It never
+  changes canonical records.
 - `models.py` contains typed canonical records; `canonical_validation.py` checks a
   complete stored snapshot.
 - `realized_cashflow.py` is an effect-free analysis module. It reads validated
@@ -52,6 +55,11 @@ user/agent -> CLI -> contracts -> EngineCore -> storage adapter -> .topo package
   rule traces, and analysis components into one locale-independent explanation
   shape. `EngineCore` may cache those opaque bytes under `derived/explanations`;
   the cache is outside canonical generations and never changes financial state.
+
+The CLI exposes the canonical record schemas already used by
+`canonical_validation.py` through `contract record-schema`. Compact analysis and
+discovery views remove presentation detail only; full results and explanation
+records preserve provenance.
 
 ## Dependency direction
 

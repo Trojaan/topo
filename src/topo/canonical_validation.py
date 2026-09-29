@@ -46,6 +46,21 @@ def _collection_schema(record_schema: JsonObject) -> JsonObject:
     }
 
 
+def record_collection_schema(record_type: str) -> JsonObject:
+    """Return the schema used for a canonical record collection."""
+    schemas = {
+        "entities": _entity_schema,
+        "assertions": _assertion_schema,
+        "evidence": _evidence_schema,
+        "proposals": _proposal_schema,
+    }
+    schema = _collection_schema(schemas[record_type]())
+    properties = cast(JsonObject, schema["properties"])
+    properties["schema_version"] = {"const": "topo.context/0.2"}
+    schema["$id"] = f"topo://schema/context-0.2-{record_type}"
+    return schema
+
+
 def _entity_schema() -> JsonObject:
     return {
         "type": "object",

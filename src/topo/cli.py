@@ -5,6 +5,7 @@ import csv
 import json
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -13,7 +14,9 @@ from pydantic import JsonValue, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from topo import __version__
+from topo.canonical_validation import record_collection_schema
 from topo.contracts import (
+    CLI_COMMANDS,
     COMMANDS,
     CONTRACT_VERSION,
     describe_result,
@@ -74,6 +77,15 @@ class IncompatibleContractVersion(Exception):
         super().__init__(str(requested))
 
 
+class UsageError(Exception):
+    pass
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise UsageError(message)
+
+
 def _request_from_source(request_path: Path | None) -> JsonObject:
     if request_path is not None:
         payload = request_path.read_text(encoding="utf-8")
@@ -103,8 +115,12 @@ def _normalize_request(
         normalized.setdefault("reason", "Initialize local Topo context")
     if command == "workspace.init":
         normalized["directory"] = str(args.directory)
-    if command in {"context.status", "context.verify"}:
+    if command in {"context.status", "context.verify", "context.summary"}:
         normalized["package"] = str(args.package)
+    if command == "context.summary":
+        normalized["as_of_date"] = args.as_of
+    if command == "contract.record_schema":
+        normalized["record_type"] = args.record_type
     if command == "source.import" and args.records_csv is not None:
         if "records" in normalized:
             raise ValueError("provide records in JSON or --records-csv, not both")
@@ -117,6 +133,65 @@ def _normalize_request(
         if "ref" in normalized and normalized["ref"] != args.ref:
             raise ValueError("provide the same ref in JSON and --ref, or only one")
         normalized["ref"] = args.ref
+    return normalized
+
+
+def _apply_shorthand(
+    command: str, args: argparse.Namespace, request: JsonObject
+) -> JsonObject:
+    if command not in {"analyze.run", "discover.run", "workflow.next"}:
+        return request
+    as_of = getattr(args, "as_of", None)
+    analysis = getattr(args, "analysis", None)
+    scope = getattr(args, "scope", None)
+    if as_of is None and analysis is None and scope is None:
+        return request
+    if as_of is None:
+        raise ValueError("shorthand requires --as-of DATE")
+    date.fromisoformat(as_of)
+    engine = EngineCore(FileSystemStorageAdapter(args.package))
+    context_id, household_id = engine.household_scope_identity(scope)
+    normalized = dict(request)
+    defaults: JsonObject = {
+        "context_id": context_id,
+        "analysis_scope": {"scope_type": "household", "entity_id": household_id},
+        "as_of_date": as_of,
+    }
+    if command == "analyze.run":
+        analysis_id = analysis or normalized.get("analysis_id")
+        if not isinstance(analysis_id, str):
+            raise ValueError(
+                "use --analysis NAME or provide analysis_id in --request JSON"
+            )
+        if not analysis_id.startswith("analysis."):
+            analysis_id = "analysis." + analysis_id
+        defaults.update(
+            {
+                "analysis_id": analysis_id,
+                "analysis_contract_version": "0.1",
+                "scenario": None,
+                "period": None,
+            }
+        )
+        if analysis_id == "analysis.realized_monthly_cashflow":
+            start = date.fromisoformat(as_of).replace(day=1)
+            end = (
+                date(start.year + 1, 1, 1)
+                if start.month == 12
+                else date(start.year, start.month + 1, 1)
+            )
+            defaults["period"] = {
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+            }
+    elif command == "workflow.next":
+        defaults["analysis_id"] = "analysis.net_worth"
+    for key, value in defaults.items():
+        if key in normalized and normalized[key] != value:
+            raise ValueError(
+                f"--as-of/--analysis/--scope conflicts with request field {key}"
+            )
+        normalized.setdefault(key, value)
     return normalized
 
 
@@ -167,6 +242,119 @@ def _records_from_csv(path: Path) -> list[JsonValue]:
 
 def _write_json(value: JsonObject) -> None:
     sys.stdout.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _compact_component(value: JsonObject) -> JsonObject:
+    keys = (
+        "component_id",
+        "status",
+        "value",
+        "minimum_value",
+        "maximum_value",
+        "expected_value",
+        "next_question",
+        "explain_ref",
+    )
+    result: JsonObject = {key: value[key] for key in keys if key in value}
+    for kind in ("blockers", "warnings"):
+        result[kind] = [
+            {
+                key: item[key]
+                for key in ("code", "message_key", "severity", "explain_ref")
+                if key in item
+            }
+            for item in cast(list[JsonObject], value.get(kind, []))
+        ]
+    return result
+
+
+def _compact_analysis(value: JsonObject) -> JsonObject:
+    result: JsonObject = {
+        key: value[key]
+        for key in (
+            "analysis_id",
+            "analysis_contract_version",
+            "analysis_scope",
+            "as_of_date",
+            "period",
+            "used_generation",
+            "result_id",
+            "scenario_id",
+            "knowledge_type",
+        )
+        if key in value
+    }
+    result["view"] = "compact"
+    if "components" in value:
+        result["components"] = [
+            _compact_component(item)
+            for item in cast(list[JsonObject], value["components"])
+        ]
+    if "domain_counts" in value:
+        result["domain_counts"] = [
+            {"domain_id": item["domain_id"], "count": item["count"]}
+            for item in cast(list[JsonObject], value["domain_counts"])
+        ]
+    for view_name in ("baseline", "scenario", "delta"):
+        view = value.get(view_name)
+        if isinstance(view, dict):
+            result[view_name] = {
+                key: _compact_component(cast(JsonObject, component))
+                for key, component in view.items()
+            }
+    return result
+
+
+def _compact_discovery(value: JsonObject) -> JsonObject:
+    candidates = cast(list[JsonObject], value["candidates"])
+    return {
+        "view": "compact",
+        "candidates": [
+            {
+                "candidate_id": item["candidate_id"],
+                "frequency": item["frequency"],
+                "direction": item["direction"],
+                "projected_next_period": item["expected_period"],
+                "money": item["money"],
+                "amount_range": item["amount_range"],
+                "score": cast(JsonObject, item["detection"])["score"],
+                "transaction_count": len(
+                    cast(list[JsonObject], item["transaction_refs"])
+                ),
+            }
+            for item in candidates
+        ],
+        "attention_items": [
+            {
+                key: item[key]
+                for key in (
+                    "code",
+                    "frequency",
+                    "required_observations",
+                    "actual_observations",
+                )
+                if key in item
+            }
+            for item in cast(list[JsonObject], value["attention_items"])
+        ],
+    }
+
+
+def _write_discovery_table(value: JsonObject) -> None:
+    print(
+        "ID  FREQUENCY  DIRECTION  AMOUNT  SCORE  TRANSACTIONS  PROJECTED NEXT PERIOD"
+    )
+    for item in cast(list[JsonObject], value["candidates"]):
+        money = item["money"]
+        amount = (
+            f"{money['amount']} {money['currency']}"
+            if isinstance(money, dict)
+            else json.dumps(item["amount_range"], ensure_ascii=False, sort_keys=True)
+        )
+        period = cast(JsonObject, item["projected_next_period"])
+        print(
+            f"{item['candidate_id']}  {item['frequency']}  {item['direction']}  {amount}  {item['score']}  {item['transaction_count']}  {period['start_date']}..{period['end_exclusive']}"
+        )
 
 
 def _write_explanation_text(result: JsonObject, locale: str) -> None:
@@ -326,21 +514,40 @@ def _success_envelope(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="topo")
+    parser = JsonArgumentParser(
+        prog="topo",
+        description="Local financial context CLI. JSON requests come from --request PATH or stdin; use contract describe for exact contract IDs.",
+        epilog=(
+            "Examples: topo context summary --package ./context.topo --as-of 2026-09-29 --json; "
+            "topo analyze run --package ./context.topo --analysis context_inventory "
+            "--as-of 2026-09-29 --compact --json; "
+            "topo workflow respond --package ./context.topo --request answer.json --json"
+        ),
+    )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
-    commands = parser.add_subparsers(dest="group", required=True)
+    commands = parser.add_subparsers(
+        dest="group", required=True, parser_class=JsonArgumentParser
+    )
 
     workspace_init = commands.add_parser("init")
     workspace_init.add_argument("directory", nargs="?", type=Path, default=Path("."))
 
     contract = commands.add_parser("contract")
     contract_commands = contract.add_subparsers(dest="contract_command", required=True)
-    contract_commands.add_parser("describe")
+    contract_commands.add_parser(
+        "describe",
+        help="Describe package-independent CLI contracts (no --package).",
+        description="Describe package-independent CLI contracts. This command does not use --package.",
+    )
     schema = contract_commands.add_parser("schema")
     schema.add_argument("command", choices=COMMANDS)
+    record_schema = contract_commands.add_parser("record-schema")
+    record_schema.add_argument(
+        "record_type", choices=("entities", "assertions", "evidence", "proposals")
+    )
 
     context = commands.add_parser("context")
     context_commands = context.add_subparsers(dest="context_command", required=True)
@@ -348,6 +555,9 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--package", type=Path, required=True)
     status = context_commands.add_parser("status")
     status.add_argument("--package", type=Path, required=True)
+    summary = context_commands.add_parser("summary")
+    summary.add_argument("--package", type=Path, required=True)
+    summary.add_argument("--as-of", required=True, metavar="DATE")
     verify = context_commands.add_parser("verify")
     verify.add_argument("--package", type=Path, required=True)
     for name in ("migrate", "restore", "compact", "privacy-scrub"):
@@ -379,16 +589,67 @@ def _parser() -> argparse.ArgumentParser:
     discover_commands = discover.add_subparsers(dest="discover_command", required=True)
     discover_run = discover_commands.add_parser("run")
     discover_run.add_argument("--package", type=Path, required=True)
+    discover_run.add_argument(
+        "--as-of",
+        metavar="DATE",
+        help="date for shorthand request; required without JSON request",
+    )
+    discover_run.add_argument(
+        "--scope",
+        metavar="HOUSEHOLD_ID",
+        help="household when the package has multiple households",
+    )
+    discover_run.add_argument(
+        "--compact",
+        action="store_true",
+        help="omit proposal and reference details from JSON",
+    )
+    discover_run.add_argument(
+        "--table",
+        action="store_true",
+        help="print a compact human-readable candidate table",
+    )
 
     analyze = commands.add_parser("analyze")
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
     analyze_run = analyze_commands.add_parser("run")
     analyze_run.add_argument("--package", type=Path, required=True)
+    analyze_run.add_argument(
+        "--analysis",
+        choices=(
+            "context_inventory",
+            "net_worth",
+            "normalized_monthly_cashflow",
+            "realized_monthly_cashflow",
+        ),
+        help="analysis name for shorthand request",
+    )
+    analyze_run.add_argument(
+        "--as-of", metavar="DATE", help="explicit date for shorthand request"
+    )
+    analyze_run.add_argument(
+        "--scope",
+        metavar="HOUSEHOLD_ID",
+        help="household when the package has multiple households",
+    )
+    analyze_run.add_argument(
+        "--compact",
+        action="store_true",
+        help="omit reference and calculation details from JSON",
+    )
 
     workflow = commands.add_parser("workflow")
     workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
     workflow_next = workflow_commands.add_parser("next")
     workflow_next.add_argument("--package", type=Path, required=True)
+    workflow_next.add_argument(
+        "--as-of", metavar="DATE", help="explicit date for shorthand request"
+    )
+    workflow_next.add_argument(
+        "--scope",
+        metavar="HOUSEHOLD_ID",
+        help="household when the package has multiple households",
+    )
     workflow_next.add_argument(
         "--request",
         type=Path,
@@ -407,6 +668,41 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("--package", type=Path, required=True)
     explain.add_argument("--ref")
     explain.add_argument("--locale", choices=("nl-NL", "en"), default="nl-NL")
+    for group in commands.choices.values():
+        nested = tuple(
+            action
+            for action in group._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        if not nested:
+            group.add_argument(
+                "--request",
+                type=Path,
+                metavar="PATH",
+                help="read JSON request from PATH (defaults to stdin)",
+            )
+            group.epilog = "Contract ID: " + next(
+                (key for key, value in CLI_COMMANDS.items() if value == group.prog),
+                "see topo contract describe --json",
+            )
+        for action in nested:
+            for leaf in action.choices.values():
+                if not any(option.dest == "request" for option in leaf._actions):
+                    leaf.add_argument(
+                        "--request",
+                        type=Path,
+                        metavar="PATH",
+                        help="read JSON request from PATH (defaults to stdin)",
+                    )
+                leaf.epilog = "Contract ID: " + next(
+                    (
+                        key
+                        for key, value in CLI_COMMANDS.items()
+                        if value
+                        == f"topo {group.prog.split()[-1]} {leaf.prog.split()[-1]}"
+                    ),
+                    "see topo contract describe --json",
+                )
     return parser
 
 
@@ -544,8 +840,20 @@ def _write_error(
     return 2
 
 
-def _missing_request_path(parser: argparse.ArgumentParser) -> NoReturn:
-    parser.error("--request requires a file path")
+def _usage_command(arguments: list[str]) -> str:
+    words = [argument for argument in arguments if not argument.startswith("-")]
+    if words:
+        for command, cli in CLI_COMMANDS.items():
+            pieces = cli.split()[1:]
+            if words[: len(pieces)] == pieces:
+                return command
+    return "validate"
+
+
+def _usage_hint(reason: str) -> str:
+    if "--request" in reason or "unrecognized arguments" in reason:
+        return "Use --request PATH or send a JSON object on stdin; see the command's --help."
+    return "See topo --help and the command's --help for valid syntax."
 
 
 def _write_workspace_text(result: JsonObject, outcome: Outcome) -> None:
@@ -565,17 +873,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     json_output = "--json" in arguments
     arguments = [argument for argument in arguments if argument != "--json"]
     request_path: Path | None = None
-    if "--request" in arguments:
-        request_index = arguments.index("--request")
-        if request_index + 1 >= len(arguments):
-            _missing_request_path(_parser())
-        request_path = Path(arguments[request_index + 1])
-        del arguments[request_index : request_index + 2]
-    args = _parser().parse_args(arguments)
+    try:
+        if "--request" in arguments:
+            request_index = arguments.index("--request")
+            if request_index + 1 >= len(arguments) or arguments[
+                request_index + 1
+            ].startswith("--"):
+                raise UsageError("--request requires a file path")
+            request_path = Path(arguments[request_index + 1])
+            del arguments[request_index : request_index + 2]
+        args = _parser().parse_args(arguments)
+    except UsageError as error:
+        reason = str(error)
+        if json_output:
+            _write_json(
+                _error_envelope(
+                    _usage_command(arguments),
+                    {"contract_version": CONTRACT_VERSION},
+                    code="INVALID_USAGE",
+                    message_key="diagnostic.invalid_usage",
+                    path="/argv",
+                    params={"reason": reason, "hint": _usage_hint(reason)},
+                    retryable=False,
+                )
+            )
+        else:
+            print(f"{reason}\n{_usage_hint(reason)}", file=sys.stderr)
+        return 2
     if args.group == "init":
         command = "workspace.init"
     elif args.group == "contract":
-        command = f"contract.{args.contract_command}"
+        command = f"contract.{args.contract_command.replace('-', '_')}"
     elif args.group == "context":
         command = f"context.{args.context_command.replace('-', '_')}"
     elif args.group == "source":
@@ -594,7 +922,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = f"proposal.{args.proposal_command}"
     request: JsonObject = {}
     try:
-        request = _normalize_request(command, args, _request_from_source(request_path))
+        request = _apply_shorthand(
+            command,
+            args,
+            _normalize_request(command, args, _request_from_source(request_path)),
+        )
         _require_supported_contract(request)
         validate_request(command, request)
 
@@ -604,6 +936,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         if command == "contract.schema":
             _write_json(
                 _success_envelope(command, request, schema_result(args.command))
+            )
+            return 0
+        if command == "contract.record_schema":
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    {
+                        "record_type": args.record_type,
+                        "context_schema_version": "topo.context/0.2",
+                        "schema": record_collection_schema(args.record_type),
+                    },
+                )
             )
             return 0
         if command == "workspace.init":
@@ -690,6 +1035,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        if command == "context.summary":
+            summary_result = EngineCore(
+                FileSystemStorageAdapter(args.package)
+            ).context_summary(date.fromisoformat(args.as_of))
+            generation = str(summary_result["generation_id"])
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    summary_result,
+                    context_id=str(summary_result["context_id"]),
+                    generation_before=generation,
+                    generation_after=generation,
+                )
+            )
+            return 0
         if command.startswith("context."):
             engine = EngineCore(FileSystemStorageAdapter(args.package))
             if command == "context.migrate":
@@ -742,11 +1103,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             ).discover_recurring_cashflows(
                 DiscoveryRequest.model_validate_json(json.dumps(request), strict=True)
             )
+            if args.table and json_output:
+                raise ValueError("--table cannot be combined with --json")
+            discovery_result = (
+                _compact_discovery(discovery_outcome.result)
+                if args.compact or args.table
+                else discovery_outcome.result
+            )
+            if args.table:
+                _write_discovery_table(discovery_result)
+                return 0
             _write_json(
                 _success_envelope(
                     command,
                     request,
-                    discovery_outcome.result,
+                    discovery_result,
                     context_id=discovery_outcome.context_id,
                     generation_before=discovery_outcome.generation_id,
                     generation_after=discovery_outcome.generation_id,
@@ -760,6 +1131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             analysis_result = EngineCore(
                 FileSystemStorageAdapter(args.package)
             ).analyze(analyze_request)
+            if args.compact:
+                analysis_result = _compact_analysis(analysis_result)
             generation = str(analysis_result["used_generation"])
             _write_json(
                 _success_envelope(

@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue
 from topo.builtin_modules import default_module_catalog
 from topo.canonical_validation import ValidatedPackage, load_and_validate_generation
 from topo.context_inventory import inventory_context, next_workflow_action
+from topo.context_summary import summarize_context
 from topo.errors import (
     ContextAlreadyExistsError,
     ExplanationReferenceError,
@@ -207,6 +208,13 @@ class EngineCore:
             self._storage.store_explanations(explanations)
         return indexed
 
+    def context_summary(self, as_of_date: date) -> JsonObject:
+        validated = self._load_existing()
+        result, explanations = summarize_context(validated, as_of_date)
+        if isinstance(self._storage, ExplanationStorage):
+            self._storage.store_explanations(explanations)
+        return result
+
     def workflow_next(self, request: WorkflowNextRequest) -> tuple[JsonObject, str]:
         validated = self._load_existing()
         return (
@@ -282,6 +290,23 @@ class EngineCore:
     def current_identity(self) -> tuple[str, str]:
         validated = self._load_existing()
         return validated.manifest.generation_id, validated.manifest.context_id
+
+    def household_scope_identity(
+        self, household_id: str | None = None
+    ) -> tuple[str, str]:
+        validated = self._load_existing()
+        households = tuple(
+            item.id
+            for item in validated.entities.records
+            if item.entity_type == "household"
+        )
+        if household_id is not None:
+            if household_id not in households:
+                raise ValueError("--scope is not a household in the current package")
+            return validated.manifest.context_id, household_id
+        if len(households) != 1:
+            raise ValueError("shorthand requires exactly one household; use --scope ID")
+        return validated.manifest.context_id, households[0]
 
     def context_status(self) -> ContextStatusResult:
         validated = self._load_existing()
@@ -1486,6 +1511,15 @@ class EngineCore:
             if isinstance(record, SourceRecordEvidenceRecord)
             and record.supersedes is not None
         }
+        transaction_ids_by_evidence: dict[str, set[str]] = {}
+        for assertion in validated.assertions.records:
+            if assertion.predicate != "domain.cashflow/booking_date":
+                continue
+            for ref in assertion.provenance:
+                if ref.ref_type == "evidence":
+                    transaction_ids_by_evidence.setdefault(ref.id, set()).add(
+                        assertion.subject_ref.id
+                    )
         observations: list[TransactionObservation] = []
         for evidence in validated.evidence.records:
             if (
@@ -1498,11 +1532,14 @@ class EngineCore:
             )
             if source_record.booking_date > request.as_of_date:
                 continue
+            transaction_ids = transaction_ids_by_evidence.get(evidence.id, set())
+            if len(transaction_ids) != 1:
+                raise PackageIntegrityError(
+                    "source evidence does not resolve to exactly one transaction"
+                )
             observations.append(
                 TransactionObservation(
-                    transaction_id=self._transaction_for_evidence(
-                        validated.assertions.records, evidence.id
-                    ),
+                    transaction_id=next(iter(transaction_ids)),
                     evidence_id=evidence.id,
                     booking_date=source_record.booking_date,
                     amount=source_record.money.amount,
