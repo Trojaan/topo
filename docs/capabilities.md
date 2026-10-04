@@ -21,7 +21,7 @@ veronderstelt geen netwerk of externe credentials.
 | Letterlijke brontransacties importeren | `source import` | Preview, daarna geautoriseerde generatie met bewijs en open bronclassificaties |
 | Bronclassificaties in bulk naar Topo vertalen | `source classify-batch` | Preview, daarna één generatie met alle bevestigde Topo-classificaties |
 | Terugkerende cashflows herkennen | `discover run` | Effectvrije kandidaten; nog geen feiten |
-| Een voorstel indienen of beslissen | `proposal submit`, `confirm`, `correct`, `reject`, `confirm-batch`, `reject-batch` | Open voorstel of geautoriseerde beslissing |
+| Een voorstel indienen of beslissen | `proposal submit`, `submit-batch`, `confirm`, `correct`, `reject`, `confirm-batch`, `reject-batch` | Open voorstel of geautoriseerde beslissing |
 | Ontbrekende context bepalen en beantwoorden | `workflow next`, `workflow respond` | Eén deterministische vraag; antwoord wordt een open voorstelbatch |
 | Gerealiseerde of genormaliseerde cashflow, vermogen of scenario analyseren | `analyze run` | Effectvrije, traceerbare analyse |
 | Veilige declaratieve regels beheren | `rule validate`, `preview`, `activate` | Alleen activatie muteert na autorisatie |
@@ -122,3 +122,10 @@ de veiligheidsgrens staan in [`domain.md`](domain.md) en [`../CONTEXT.md`](../CO
 
 Zie [`domain.md`](domain.md) voor de volledige veiligheidssemantiek en
 [`architecture.md`](architecture.md) voor eigenaarschap en afhankelijkheidsrichting.
+
+Met `proposal submit-batch` worden maximaal 1.000 gewone assertion-voorstellen in
+één geautoriseerde generatie ingediend. Eerst geeft de opdracht een preview. De
+autorisatie van een mens geldt voor de complete aanvraag en verwachte generatie.
+Het resultaat koppelt iedere invoerpositie aan een nieuw open voorstel; bevestigen
+als feit blijft een afzonderlijke beslissing. Eén operation_id maakt herhaling
+veilig voor de hele batch.

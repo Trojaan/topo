@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, JsonValue
 
@@ -19,6 +20,7 @@ from topo.errors import (
     ExplanationReferenceError,
     PackageIntegrityError,
     ProposalDecisionError,
+    StaleGenerationError,
 )
 from topo.explanations import (
     decode_explanation,
@@ -58,6 +60,7 @@ from topo.models import (
     Producer,
     ProposalBatchConfirmRequest,
     ProposalBatchRejectRequest,
+    ProposalBatchSubmitRequest,
     ProposalConfirmRequest,
     ProposalCorrectRequest,
     ProposalDecision,
@@ -110,6 +113,7 @@ from topo.storage import (
     RetentionStorage,
     StorageAdapter,
     StoredPackageSnapshot,
+    ValidatedHistoryStorage,
 )
 
 Clock = Callable[[], datetime]
@@ -134,6 +138,70 @@ def _json_bytes(value: BaseModel) -> bytes:
     return (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+
+
+def _same_model(left: BaseModel | None, right: BaseModel) -> bool:
+    return left is right or (
+        left is not None
+        and left == right
+        and left.model_dump_json() == right.model_dump_json()
+    )
+
+
+def _collection_update_bytes(
+    previous_payload: bytes,
+    previous: tuple[
+        EntityRecord | AssertionRecord | EvidenceRecord | ProposalRecord, ...
+    ],
+    ordered: tuple[
+        EntityRecord | AssertionRecord | EvidenceRecord | ProposalRecord, ...
+    ],
+    schema_version: str,
+    fallback: BaseModel,
+) -> bytes:
+    """Reuse complete canonical record fragments; fall back for other layouts."""
+    prefix = b'{\n  "records": [\n'
+    if not previous or not ordered or not previous_payload.startswith(prefix):
+        return _json_bytes(fallback)
+    starts = [
+        match.start() for match in re.finditer(rb"(?m)^    \{\n", previous_payload)
+    ]
+    end = previous_payload.rfind(b'\n  ],\n  "schema_version": ')
+    if len(starts) != len(previous) or end < 0:
+        return _json_bytes(fallback)
+    fragments: dict[
+        str,
+        tuple[EntityRecord | AssertionRecord | EvidenceRecord | ProposalRecord, bytes],
+    ] = {}
+    for index, item in enumerate(previous):
+        stop = starts[index + 1] if index + 1 < len(starts) else end
+        fragment = previous_payload[starts[index] : stop].removesuffix(b",\n")
+        try:
+            raw = json.loads(fragment)
+            if raw.get("id") != item.id:
+                return _json_bytes(fallback)
+        except (ValueError, AttributeError):
+            return _json_bytes(fallback)
+        fragments[item.id] = (item, fragment)
+    output = []
+    for item in ordered:
+        cached = fragments.get(item.id)
+        if cached is not None and _same_model(cached[0], item):
+            output.append(cached[1])
+        else:
+            output.append(
+                b"\n".join(
+                    b"    " + line
+                    for line in _json_bytes(item).rstrip(b"\n").split(b"\n")
+                )
+            )
+    return (
+        prefix
+        + b",\n".join(output)
+        + b'\n  ],\n  "schema_version": '
+        + json.dumps(schema_version).encode()
+        + b"\n}\n"
+    )
 
 
 def _evidence_inventory_bytes(paths: tuple[str, ...]) -> bytes:
@@ -324,6 +392,7 @@ class EngineCore:
     def verify_context(self) -> ContextVerifyResult:
         snapshot = self._load_snapshot()
         validated = load_and_validate_generation(snapshot)
+        self._remember_validated_history(validated.manifest.generation_id)
         return ContextVerifyResult(
             context_id=validated.manifest.context_id,
             generation_id=validated.manifest.generation_id,
@@ -911,6 +980,66 @@ class EngineCore:
             mutation_id=mutation_id,
             generation_id=generation_id,
             proposals=(*validated.proposals.records, proposal),
+            result=result,
+            now=now,
+        )
+        self._commit_update(publication, request.expected_generation)
+        return self._success(request, generation_id, result)
+
+    def submit_proposal_batch(
+        self, request: ProposalBatchSubmitRequest
+    ) -> MutationOutcome:
+        validated = self._load_full_existing()
+        replay = self._replay(validated.journal, request.operation_id)
+        if replay is not None:
+            return self._replayed_outcome(validated.manifest, replay)
+        conflict = self._guard_request(validated.manifest, request)
+        if conflict is not None:
+            return conflict
+        for item in request.proposals:
+            self._module_catalog.validate_proposed_assertion(
+                item.proposed_assertion,
+                validated.manifest.modules,
+                validated.assertions.records,
+                validated.entities.records,
+            )
+        basis = request.model_dump(mode="json", exclude={"authorization"})
+        digest = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+        preview: JsonObject = {
+            "preview_ref": f"preview:sha256:{digest}",
+            "effects": [
+                {"action": "create_proposal", "item_index": index}
+                for index in range(len(request.proposals))
+            ],
+        }
+        if request.authorization is None:
+            return self._authorization_required(request, preview)
+        self._validate_authorization(request.authorization, preview)
+        now = self._now()
+        proposals = tuple(
+            ProposalRecord(
+                id=self._id_factory(),
+                **item.model_dump(),
+                status="open",
+                created_at=now,
+                decision=None,
+            )
+            for item in request.proposals
+        )
+        result: JsonObject = {
+            "items": [
+                {"item_index": index, "proposal_id": proposal.id}
+                for index, proposal in enumerate(proposals)
+            ]
+        }
+        generation_id = self._id_factory()
+        publication = self._build_update_publication(
+            validated,
+            request=request,
+            operation="proposal.submit-batch",
+            mutation_id=self._id_factory(),
+            generation_id=generation_id,
+            proposals=(*validated.proposals.records, *proposals),
             result=result,
             now=now,
         )
@@ -2607,7 +2736,22 @@ class EngineCore:
         return load_and_validate_generation(self._load_current_snapshot())
 
     def _load_full_existing(self) -> ValidatedPackage:
-        return load_and_validate_generation(self._load_snapshot())
+        if isinstance(self._storage, ValidatedHistoryStorage):
+            verified_current = self._storage.load_verified_current()
+            if verified_current is not None:
+                return load_and_validate_generation(verified_current)
+        validated = load_and_validate_generation(self._load_snapshot())
+        self._remember_validated_history(validated.manifest.generation_id)
+        return validated
+
+    def _remember_validated_history(self, generation_id: str) -> None:
+        if isinstance(self._storage, ValidatedHistoryStorage):
+            try:
+                self._storage.remember_validated_history(
+                    expected_generation=generation_id
+                )
+            except (OSError, PackageIntegrityError, StaleGenerationError):
+                pass
 
     def _load_current_snapshot(self) -> StoredPackageSnapshot:
         try:
@@ -2989,6 +3133,7 @@ class EngineCore:
             "source.import",
             "source.classify-batch",
             "proposal.submit",
+            "proposal.submit-batch",
             "proposal.confirm",
             "proposal.correct",
             "proposal.reject",
@@ -3027,49 +3172,73 @@ class EngineCore:
             if context_schema_version is None
             else context_schema_version
         )
-        collections = {
-            "entities.json": _json_bytes(
-                CanonicalCollection[EntityRecord](
-                    schema_version=target_context_schema,
-                    records=tuple(
-                        sorted(
-                            entities or validated.entities.records, key=lambda x: x.id
-                        )
-                    ),
-                )
-            ),
-            "assertions.json": _json_bytes(
-                CanonicalCollection[AssertionRecord](
-                    schema_version=target_context_schema,
-                    records=tuple(
-                        sorted(
-                            assertions or validated.assertions.records,
-                            key=lambda x: x.id,
-                        )
-                    ),
-                )
-            ),
-            "evidence.json": _json_bytes(
-                CanonicalCollection[EvidenceRecord](
-                    schema_version=target_context_schema,
-                    records=tuple(
-                        sorted(
-                            evidence or validated.evidence.records, key=lambda x: x.id
-                        )
-                    ),
-                )
-            ),
-            "proposals.json": _json_bytes(
-                CanonicalCollection[ProposalRecord](
-                    schema_version=target_context_schema,
-                    records=tuple(
-                        sorted(
-                            proposals or validated.proposals.records, key=lambda x: x.id
-                        )
-                    ),
-                )
-            ),
+        reuse_collections = operation not in {
+            "context.privacy_scrub",
+            "context.restore",
+            "context.migrate",
         }
+        collections: dict[str, bytes] = {}
+        collection_changes: dict[str, object] = {}
+        for filename, previous, changed, collection_model in (
+            (
+                "entities.json",
+                validated.entities.records,
+                entities,
+                CanonicalCollection[EntityRecord],
+            ),
+            (
+                "assertions.json",
+                validated.assertions.records,
+                assertions,
+                CanonicalCollection[AssertionRecord],
+            ),
+            (
+                "evidence.json",
+                validated.evidence.records,
+                evidence,
+                CanonicalCollection[EvidenceRecord],
+            ),
+            (
+                "proposals.json",
+                validated.proposals.records,
+                proposals,
+                CanonicalCollection[ProposalRecord],
+            ),
+        ):
+            if (
+                reuse_collections
+                and changed is None
+                and target_context_schema == validated.manifest.context_schema_version
+            ):
+                collections[filename] = validated.generation_files[filename]
+                continue
+            records = previous if changed is None else changed
+            ordered = tuple(sorted(records, key=lambda item: item.id))
+            collection = cast(Any, collection_model)(
+                schema_version=target_context_schema, records=ordered
+            )
+            collections[filename] = (
+                _collection_update_bytes(
+                    validated.generation_files[filename],
+                    previous,
+                    ordered,
+                    target_context_schema,
+                    collection,
+                )
+                if reuse_collections
+                else _json_bytes(collection)
+            )
+            previous_by_id = {item.id: item for item in previous}
+            current_ids = {item.id for item in ordered}
+            collection_changes[filename] = {
+                "schema_version": target_context_schema,
+                "removed": sorted(set(previous_by_id) - current_ids),
+                "upsert": [
+                    json.loads(_json_bytes(item))
+                    for item in ordered
+                    if not _same_model(previous_by_id.get(item.id), item)
+                ],
+            }
         active_artifacts = (
             validated.rule_package_files
             if rule_package_files is None
@@ -3137,6 +3306,7 @@ class EngineCore:
             journal=_json_bytes(journal),
             evidence_records=source_records or {},
             evidence_inventory=inventory_payload,
+            collection_changes=collection_changes if reuse_collections else None,
         )
         load_and_validate_generation(
             StoredPackageSnapshot(
@@ -3153,6 +3323,7 @@ class EngineCore:
 
     def _commit_update(self, publication: PackageCommit, expected: str) -> None:
         self._storage.commit(publication, expected_generation=expected)
+        self._remember_validated_history(publication.generation_id)
 
     @staticmethod
     def _guard_rule_read(manifest: Manifest, request: RulePackageRequest) -> None:

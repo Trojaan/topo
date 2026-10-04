@@ -73,6 +73,31 @@ remediation when a forbidden import appears.
 
 ## Persistence transaction
 
+The filesystem adapter also reads `topo.storage/0.2` packages produced by the
+explicit `context storage-migrate` command. This storage version is independent of
+the context schema and CLI contract. Its first and every sixteenth retained
+generation is a complete checkpoint; intervening generations contain checksummed
+record-level changes for the four canonical collections and a logical manifest.
+The adapter reconstructs complete snapshots before passing them to EngineCore.
+`derived/current` is a disposable materialization of the current snapshot.
+`derived/validated-history.json` records the digest of a package whose complete
+history was semantically validated. A mutation checks all canonical bytes against
+that digest before reusing the prior validation result; a mismatch or missing
+receipt forces full validation. `context verify`, restore, and privacy-scrub always
+perform full validation. Both derived artifacts can be deleted and rebuilt.
+The receipt is a local performance hint, not an authentication boundary: a writer
+able to forge both canonical files and the receipt can defeat reuse checks. A
+full `context verify` always audits the retained states again.
+
+Storage migration verifies the old package, builds a separate package at a new
+path, verifies the reconstructed history and current bytes, then publishes the
+new directory atomically. The source remains untouched. Compacting a delta
+package rebases retained generations whose parents were pruned to checkpoints;
+privacy-scrub rewrites all retained deltas and checkpoints so the selected data
+does not survive in canonical storage.
+SQLite is deliberately a separate decision: an index alone does not remove the
+cost of semantically validating every retained historical state.
+
 Every mutation loads and semantically validates the current and all retained
 generations, applies the complete change in memory, validates the proposed
 publication, writes a new immutable generation, durably updates the journal, and
@@ -152,3 +177,36 @@ selected evidence from every retained generation and raw evidence record, remove
 dependent proposals, marks surviving dependent assertions `unverifiable`, scrubs
 the identifier from mutation fields, rewrites checksums and inventories, clears
 derived explanations, and validates the resulting package again.
+
+## Delta verification and change sets
+
+For delta packages, one verification call owns a private typed-record cache. A
+record is reused only when its complete decoded value is identical; the collection
+envelope and every generation checksum are still checked. Literal source
+projections are reused only for the exact evidence, source record, subject entity,
+observation assertions and classification proposals that passed their earlier
+check in that call. All cross-record references, lineage, uniqueness, journal,
+module ownership and evidence inventory checks still run for every generation.
+No semantic cache survives the verification call. `incremental=False` retains the
+full validator as an equivalence oracle.
+
+The delta reader caches canonical record fragments while traversing a chain,
+reconstructs the complete logical bytes and verifies their manifest checksums.
+Checkpoints reset that physical cache. This avoids repeatedly serializing every
+unchanged record in every retained generation.
+
+EngineCore carries an explicit collection change set in `PackageCommit`. It reuses
+unchanged collection bytes and canonical record fragments for small mutations,
+then validates the complete successor state. The adapter reconstructs the supplied
+delta and checks it against that validated state before publication. Requests
+without a change set keep the adapter's full diff path. Restore, schema migration
+and privacy scrub use full collection serialization and that full diff path.
+Atomic publication, recovery, retention and evidence inventories keep their
+existing boundaries.
+
+`proposal submit-batch` previews up to 1,000 assertion proposals in input order.
+Human authorization binds to the complete request, including operation ID and
+expected generation. EngineCore validates and stores all items as open proposals
+in one generation and one journal entry; each result has an `item_index` and
+`proposal_id`. Replay returns those same identities. The existing single-submit
+command and its schemas keep their versions.

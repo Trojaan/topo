@@ -165,12 +165,13 @@ def test_user_can_discover_commands_and_schema_validated_responses(
     discovery = json.loads(described.stdout)
     assert discovery["outcome"] == "succeeded"
     assert discovery["result"]["supported_contract_versions"] == ["topo.cli/0.1"]
-    assert [command["command"] for command in discovery["result"]["commands"]][:8] == [
+    assert [command["command"] for command in discovery["result"]["commands"]][:9] == [
         "context.init",
         "workspace.init",
         "context.status",
         "context.summary",
         "context.verify",
+        "context.storage_migrate",
         "contract.describe",
         "contract.schema",
         "contract.record_schema",
@@ -285,6 +286,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "context.status",
         "context.summary",
         "context.verify",
+        "context.storage_migrate",
         "context.migrate",
         "context.restore",
         "context.compact",
@@ -296,6 +298,7 @@ def test_contract_discovery_only_exposes_executable_commands() -> None:
         "source.classify-batch",
         "discover.run",
         "proposal.submit",
+        "proposal.submit-batch",
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",

@@ -59,5 +59,4 @@ def test_user_initializes_an_agent_ready_workspace(tmp_path: Path) -> None:
         assert "Do not inspect Topo's implementation" in instructions
         assert "use unrelated transactions as evidence" in instructions
         assert "Check the installed version with `topo --version`" in instructions
-        assert "install.sh | bash" in instructions
-        assert "install.ps1 | iex" in instructions
+        assert "Run `topo upgrade`" in instructions

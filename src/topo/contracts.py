@@ -49,6 +49,7 @@ COMMANDS = (
     "context.status",
     "context.summary",
     "context.verify",
+    "context.storage_migrate",
     "contract.describe",
     "contract.schema",
     "contract.record_schema",
@@ -60,6 +61,7 @@ COMMANDS = (
     "source.classify-batch",
     "discover.run",
     "proposal.submit",
+    "proposal.submit-batch",
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
@@ -97,6 +99,7 @@ MUTATING_COMMANDS = {
     "source.import",
     "source.classify-batch",
     "proposal.submit",
+    "proposal.submit-batch",
     "proposal.confirm",
     "proposal.correct",
     "proposal.reject",
@@ -570,6 +573,17 @@ def _mutation_input(command: str) -> SchemaObject:
             "items": _uuid7(),
         }
         required.append("evidence_ids")
+    if command == "proposal.submit-batch":
+        single = _mutation_input("proposal.submit")
+        single_properties = cast(SchemaObject, single["properties"])
+        properties["proposals"] = {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1000,
+            "items": single_properties["proposal"],
+        }
+        properties["authorization"] = {"oneOf": [_authorization(), {"type": "null"}]}
+        required.append("proposals")
     if command == "proposal.submit":
         properties["proposal"] = _closed_object(
             {
@@ -766,9 +780,17 @@ def input_schema(command: str) -> SchemaObject:
             "enum": ["entities", "assertions", "evidence", "proposals"]
         }
         required.append("record_type")
-    elif command in {"context.status", "context.verify", "context.summary"}:
+    elif command in {
+        "context.status",
+        "context.verify",
+        "context.summary",
+        "context.storage_migrate",
+    }:
         properties["package"] = {"type": "string", "minLength": 1}
         required.append("package")
+        if command == "context.storage_migrate":
+            properties["output"] = {"type": "string", "minLength": 1}
+            required.append("output")
         if command == "context.summary":
             properties["as_of_date"] = {"type": "string", "format": "date"}
             required.append("as_of_date")
@@ -1050,6 +1072,15 @@ def _result_schema(command: str) -> SchemaObject:
                 "evidence_records_verified",
             ),
         )
+    if command == "context.storage_migrate":
+        return _closed_object(
+            {
+                "storage_format": {"const": "topo.storage/0.2"},
+                "output": {"type": "string", "minLength": 1},
+                "generations_migrated": {"type": "integer", "minimum": 1},
+            },
+            ("storage_format", "output", "generations_migrated"),
+        )
     if command == "context.migrate":
         return {
             "oneOf": [
@@ -1306,6 +1337,23 @@ def _result_schema(command: str) -> SchemaObject:
             ("view", "candidates", "attention_items"),
         )
         return {"oneOf": [full_result, compact_result]}
+    if command == "proposal.submit-batch":
+        return _closed_object(
+            {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _closed_object(
+                        {
+                            "item_index": {"type": "integer", "minimum": 0},
+                            "proposal_id": _uuid7(),
+                        },
+                        ("item_index", "proposal_id"),
+                    ),
+                }
+            },
+            ("items",),
+        )
     if command == "proposal.submit":
         return {
             "oneOf": [

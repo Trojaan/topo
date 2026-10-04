@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
@@ -97,6 +98,70 @@ def _measure(arguments: tuple[str, ...], request: dict[str, Any] | None) -> floa
     return time.perf_counter() - started
 
 
+def _package_bytes(package: Path) -> int:
+    return sum(path.stat().st_size for path in package.rglob("*") if path.is_file())
+
+
+def _profile_storage(
+    legacy: Path,
+    fixture: dict[str, Any],
+    record_count: int,
+    *,
+    memory: bool,
+) -> Path:
+    delta = legacy.parent / "delta.topo"
+    _run("context", "storage-migrate", "--package", str(legacy), "--output", str(delta))
+    for label, package in (("full", legacy), ("delta", delta)):
+        verify_args = ("context", "verify", "--package", str(package))
+        verification = _measure(verify_args, None)
+        verify_rss = _peak_memory_mib(verify_args, None) if memory else None
+        mutation_package = legacy.parent / f"{label}-mutation.topo"
+        shutil.copytree(
+            package, mutation_package, ignore=shutil.ignore_patterns("derived")
+        )
+        request = {
+            "contract_version": "topo.cli/0.1",
+            "operation_id": _operation_id(999_999),
+            "context_id": fixture["context_id"],
+            "expected_generation": fixture["generation_id"],
+            "actor": {
+                "actor_type": "source_adapter",
+                "actor_id": "adapter.synthetic-performance",
+            },
+            "reason": "Measure one authorized storage mutation",
+            "adapter": {
+                "adapter_id": "adapter.synthetic-performance",
+                "adapter_version": "0.1.0",
+            },
+            "records": _records(record_count, 1),
+            "authorization": None,
+        }
+        arguments = ("source", "import", "--package", str(mutation_package))
+        preview = _run(*arguments, request=request)
+        request["authorization"] = {
+            "preview_ref": preview["result"]["preview_ref"],
+            "authorized_by": {"actor_type": "human", "actor_id": "benchmark"},
+            "authorized_at": "2026-09-04T12:00:00+02:00",
+        }
+        if memory:
+            started = time.perf_counter()
+            mutation_rss = _peak_memory_mib(arguments, request)
+            mutation = time.perf_counter() - started
+        else:
+            mutation_rss = None
+            mutation = _measure(arguments, request)
+        size_mib = _package_bytes(package) / (1024 * 1024)
+        print(
+            f"{label} storage: size={size_mib:.1f}MiB "
+            f"verify={verification:.3f}s mutation={mutation:.3f}s"
+        )
+        if verify_rss is not None:
+            print(f"{label} storage: verify_peak_rss={verify_rss:.1f}MiB")
+        if mutation_rss is not None:
+            print(f"{label} storage: mutation_peak_rss={mutation_rss:.1f}MiB")
+    return delta
+
+
 _MEMORY_SHIM = """
 import resource
 import runpy
@@ -145,6 +210,11 @@ def main() -> int:
         action="store_true",
         help="also measure recurring discovery",
     )
+    parser.add_argument(
+        "--storage-profile",
+        action="store_true",
+        help="compare full and delta package size, verification, and mutation",
+    )
     args = parser.parse_args()
     if args.records < 1 or args.generations < 2 or args.runs < 1:
         parser.error(
@@ -154,6 +224,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="topo-read-benchmark-") as directory:
         package = Path(directory) / "synthetic.topo"
         fixture = _build_fixture(package, args.records, args.generations)
+        read_package = package
+        if args.storage_profile:
+            read_package = _profile_storage(
+                package, fixture, args.records, memory=args.memory
+            )
         scope = {
             "scope_type": "household",
             "entity_id": fixture["household_id"],
@@ -174,21 +249,21 @@ def main() -> int:
         }
         cases = {
             "context.status": (
-                ("context", "status", "--package", str(package)),
+                ("context", "status", "--package", str(read_package)),
                 None,
             ),
             "workflow.next": (
-                ("workflow", "next", "--package", str(package)),
+                ("workflow", "next", "--package", str(read_package)),
                 workflow_request,
             ),
             "analyze.run": (
-                ("analyze", "run", "--package", str(package)),
+                ("analyze", "run", "--package", str(read_package)),
                 analysis_request,
             ),
         }
         if args.include_discover:
             cases["discover.run"] = (
-                ("discover", "run", "--package", str(package), "--compact"),
+                ("discover", "run", "--package", str(read_package), "--compact"),
                 {
                     "contract_version": "topo.cli/0.1",
                     "context_id": fixture["context_id"],

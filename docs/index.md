@@ -7,6 +7,7 @@ these pages hold the detail.
 | --- | --- |
 | Beschikbare functies en uitvoerbare workflows | [Capabilities](capabilities.md) |
 | Runtime structure, data flow, dependency boundaries | [Architecture](architecture.md) |
+| Begeleide technische rondleiding door de architectuur | [Architecture tour](architecture-tour.md) |
 | Domain language, invariants, and safety boundary | [Domain](domain.md) |
 | Environment setup and common commands | [Development](development.md) |
 | Test layers, e2e evidence, and ship gate | [Testing](testing.md) |
@@ -15,3 +16,5 @@ these pages hold the detail.
 `CONTEXT.md` is the canonical Dutch glossary. The material under `.scratch/` is
 design history: useful for rationale, but it does not override code, tests, or
 the documents above.
+
+- [Performance measurements](performance.md): synthetische meting en kosten van integriteitscontrole.

@@ -44,6 +44,18 @@ This directory contains a local, auditable financial context in `context.topo/`.
 - Fill technical fields from the action's `request_template` and
   `agent_input_paths`. Do not inspect Topo's implementation to reconstruct missing
   contract context, invent references, or use unrelated transactions as evidence.
+- For a large wave, read the domain state once and prepare request files first.
+  Execute mutations sequentially, refreshing each pending request's generation
+  before execution. Preview and obtain explicit human authorization for each
+  proposal decision before moving to the next mutation; keep its operation ID
+  and generation unchanged between preview and authorization.
+- Use `source classify-batch` for reviewed transaction groups, `discover run`
+  for effect-free candidates, and `workflow next`/`workflow respond` when the
+  workflow supplies an action. `proposal submit` has no effect-free preview:
+  validate its request shape through `contract schema` before submitting it.
+- In a Topo source checkout, `scripts/topo_helpers.py` builds, refreshes and
+  validates mutation request files without executing them. It is in `scripts/`
+  because `imports/` is excluded from Git.
 - If an action has no valid evidence or execution route, report the contract gap
   explicitly instead of guessing.
 - After every step, present a compact Dutch update with exactly these headings,
@@ -51,10 +63,8 @@ This directory contains a local, auditable financial context in `context.topo/`.
   `Openstaand en onzeker`, `Actuele inzichten`, `Volgende vraag`. Keep provenance,
   validity, verification, and refs available below the compact overview. Never
   invent or display one general completeness percentage.
-- Check the installed version with `topo --version`. To update Topo, rerun the
-  official installer for the current platform:
-  - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh | bash`
-  - Windows PowerShell: `irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex`
+- Check the installed version with `topo --version`. Run `topo upgrade` to
+  update a standalone installation to the latest release.
 - Keep financial source files in `imports/`; both it and `context.topo/` are
   intentionally excluded from Git.
 {TOPO_END}"""

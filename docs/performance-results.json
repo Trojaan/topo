@@ -1,0 +1,108 @@
+{
+  "records": 7500,
+  "generations": 21,
+  "python": "3.13.11 (main, Dec  5 2025, 16:06:33) [Clang 17.0.0 (clang-1700.6.3.2)]",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "reference_limitation": "Synthetic storage benchmark, with a conservative full-validation reference.\n\nThe reference uses the same invariants and publication logic, but disables typed\nrecord reuse, collection-byte reuse and the supplied delta change set. It retains\nthe new engine's change-set calculation, so is not a pristine pre-change binary.\n",
+  "reference": {
+    "package_mib": 85.46340656280518,
+    "canonical_package_mib": 58.141313552856445,
+    "verify_seconds": 24.616753999958746,
+    "verify_profile": null,
+    "reads_seconds": {
+      "context.status": 4.21928774996195,
+      "workflow.next": 2.246774541970808,
+      "analyze.run": 1.3735934579744935
+    },
+    "mutation_seconds": [
+      32.685457874962594,
+      16.832792999979574,
+      8.780350583023392,
+      9.407161957991775,
+      13.332998708006926,
+      9.781969957984984,
+      9.888489792007022,
+      9.297422749979887,
+      8.588295167020988,
+      9.903022708022036
+    ],
+    "ten_mutations_seconds": 128.49796249897918,
+    "preview_seconds": [
+      4.212562291009817,
+      3.2939631670014933,
+      7.107355332991574,
+      2.8637832080130465,
+      4.103941791981924,
+      3.934181709017139,
+      3.1229697079979815,
+      3.294910665950738,
+      3.0739504999946803,
+      3.6764445420121774
+    ],
+    "round_including_previews_seconds": 167.18202541494975,
+    "mutation_profile": null
+  },
+  "optimized": {
+    "package_mib": 85.46340656280518,
+    "canonical_package_mib": 58.141313552856445,
+    "verify_seconds": 7.147477207996417,
+    "verify_profile": null,
+    "reads_seconds": {
+      "context.status": 2.087491417012643,
+      "workflow.next": 1.4173698329832405,
+      "analyze.run": 1.248861083004158
+    },
+    "mutation_seconds": [
+      7.632359791023191,
+      6.423600249981973,
+      6.1937401670147665,
+      6.491448541986756,
+      6.4794516660040244,
+      13.829442083020695,
+      6.29554287501378,
+      6.230438083002809,
+      5.924661124998238,
+      6.017654708004557
+    ],
+    "ten_mutations_seconds": 71.51833929005079,
+    "preview_seconds": [
+      2.7058991250232793,
+      2.270362249983009,
+      2.9514454169548117,
+      2.2866811669664457,
+      2.248110790969804,
+      2.2271659999969415,
+      5.28442920796806,
+      2.1763793749851175,
+      2.053481250011828,
+      2.3579788340139203
+    ],
+    "round_including_previews_seconds": 98.080272706924,
+    "mutation_profile": null
+  },
+  "submit_round": {
+    "individual_mutation_seconds": [
+      30.450502374966163,
+      5.2658638750435784,
+      5.273539374989923,
+      5.185511749994475,
+      8.791172957979143,
+      6.106383583042771,
+      5.319167624984402,
+      4.962566540983971,
+      5.3073745829751715,
+      5.156223666970618
+    ],
+    "individual_round_seconds": 81.81830633193022,
+    "bulk_mutation_seconds": 5.152743917016778,
+    "bulk_preview_seconds": 24.05386070802342,
+    "bulk_round_seconds": 29.2066046250402,
+    "individual_generations_added": 10,
+    "bulk_generations_added": 1
+  },
+  "measurement_caveats": [
+    "Reference disables reuse and uses the previous metadata traversal; it is not a pristine pre-change executable.",
+    "Machine load and filesystem cache cause visible outliers; retain all timings and use the median for single mutations.",
+    "Peak memory and instrumented phases are measured separately from ordinary elapsed times."
+  ]
+}

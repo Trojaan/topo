@@ -1,0 +1,232 @@
+{
+  "fixture_records": 7500,
+  "fixture_generations": 21,
+  "profile_overhead_included": true,
+  "verify": {
+    "exclusive_seconds": {
+      "read": 1.3774279500000002,
+      "parse": 1.501011449,
+      "semantic": 3.2824608150000008,
+      "serialize": 0.374465728,
+      "storage_sync": 0.192629532,
+      "other": 4.15154450900002
+    },
+    "top_exclusive": [
+      {
+        "function": "<built-in method _io.open>",
+        "file": "~",
+        "seconds": 1.159026687
+      },
+      {
+        "function": "raw_decode",
+        "file": "decoder.py",
+        "seconds": 1.014085173
+      },
+      {
+        "function": "_validate_snapshot",
+        "file": "canonical_validation.py",
+        "seconds": 0.919102166
+      },
+      {
+        "function": "_same_json_types",
+        "file": "canonical_validation.py",
+        "seconds": 0.7457265070000001
+      },
+      {
+        "function": "<built-in method builtins.all>",
+        "file": "~",
+        "seconds": 0.642131438
+      },
+      {
+        "function": "<genexpr>",
+        "file": "canonical_validation.py",
+        "seconds": 0.5627105290000001
+      },
+      {
+        "function": "<method 'validate_json' of 'pydantic_core._pydantic_core.SchemaValidator' objects>",
+        "file": "~",
+        "seconds": 0.45303039300000003
+      },
+      {
+        "function": "<method 'get' of 'dict' objects>",
+        "file": "~",
+        "seconds": 0.40282059400000003
+      },
+      {
+        "function": "collection",
+        "file": "canonical_validation.py",
+        "seconds": 0.35522239
+      },
+      {
+        "function": "<built-in method _hashlib.openssl_sha256>",
+        "file": "~",
+        "seconds": 0.34039712800000005
+      },
+      {
+        "function": "<built-in method builtins.isinstance>",
+        "file": "~",
+        "seconds": 0.325938493
+      },
+      {
+        "function": "iterencode",
+        "file": "encoder.py",
+        "seconds": 0.272261127
+      },
+      {
+        "function": "_same_record_value",
+        "file": "canonical_validation.py",
+        "seconds": 0.24275827800000002
+      },
+      {
+        "function": "<genexpr>",
+        "file": "canonical_validation.py",
+        "seconds": 0.190372765
+      },
+      {
+        "function": "<method 'join' of 'bytes' objects>",
+        "file": "~",
+        "seconds": 0.183288165
+      },
+      {
+        "function": "<genexpr>",
+        "file": "delta_storage.py",
+        "seconds": 0.12476376400000001
+      },
+      {
+        "function": "<method 'read' of '_io.BufferedReader' objects>",
+        "file": "~",
+        "seconds": 0.111305679
+      },
+      {
+        "function": "_parse_path",
+        "file": "_local.py",
+        "seconds": 0.11061359200000001
+      },
+      {
+        "function": "<method '__exit__' of '_io._IOBase' objects>",
+        "file": "~",
+        "seconds": 0.097907884
+      },
+      {
+        "function": "<genexpr>",
+        "file": "canonical_validation.py",
+        "seconds": 0.093748548
+      }
+    ],
+    "peak_rss_mib": 920.46875
+  },
+  "mutation": {
+    "exclusive_seconds": {
+      "read": 3.403063518,
+      "parse": 1.024620225,
+      "semantic": 0.5308594309999999,
+      "serialize": 0.118874588,
+      "storage_sync": 0.13506373799999996,
+      "other": 1.4310059990000301
+    },
+    "top_exclusive": [
+      {
+        "function": "<built-in method _io.open>",
+        "file": "~",
+        "seconds": 3.0671343230000003
+      },
+      {
+        "function": "<method 'validate_json' of 'pydantic_core._pydantic_core.SchemaValidator' objects>",
+        "file": "~",
+        "seconds": 0.7836077680000001
+      },
+      {
+        "function": "_validate_snapshot",
+        "file": "canonical_validation.py",
+        "seconds": 0.48291556100000005
+      },
+      {
+        "function": "_collection_update_bytes",
+        "file": "engine.py",
+        "seconds": 0.295458194
+      },
+      {
+        "function": "<method '__exit__' of '_io._IOBase' objects>",
+        "file": "~",
+        "seconds": 0.193598068
+      },
+      {
+        "function": "raw_decode",
+        "file": "decoder.py",
+        "seconds": 0.14756734700000002
+      },
+      {
+        "function": "<method 'read' of '_io.BufferedReader' objects>",
+        "file": "~",
+        "seconds": 0.142074955
+      },
+      {
+        "function": "iterencode",
+        "file": "encoder.py",
+        "seconds": 0.115742253
+      },
+      {
+        "function": "<built-in method _io.open_code>",
+        "file": "~",
+        "seconds": 0.09912779000000001
+      },
+      {
+        "function": "<built-in method _hashlib.openssl_sha256>",
+        "file": "~",
+        "seconds": 0.084437252
+      },
+      {
+        "function": "<method 'update' of '_hashlib.HASH' objects>",
+        "file": "~",
+        "seconds": 0.078079037
+      },
+      {
+        "function": "_canonical_digest_locked",
+        "file": "storage.py",
+        "seconds": 0.046845035
+      },
+      {
+        "function": "_build_update_publication",
+        "file": "engine.py",
+        "seconds": 0.039206285
+      },
+      {
+        "function": "model_validate_json",
+        "file": "main.py",
+        "seconds": 0.035980196
+      },
+      {
+        "function": "<built-in method _imp.create_dynamic>",
+        "file": "~",
+        "seconds": 0.033946167
+      },
+      {
+        "function": "decode",
+        "file": "decoder.py",
+        "seconds": 0.031650407000000005
+      },
+      {
+        "function": "walk",
+        "file": "storage.py",
+        "seconds": 0.029531899
+      },
+      {
+        "function": "<built-in method builtins.isinstance>",
+        "file": "~",
+        "seconds": 0.027646655000000003
+      },
+      {
+        "function": "<method 'get' of 'dict' objects>",
+        "file": "~",
+        "seconds": 0.027093533000000003
+      },
+      {
+        "function": "loads",
+        "file": "__init__.py",
+        "seconds": 0.025814507
+      }
+    ],
+    "peak_rss_mib": 623.1875
+  },
+  "categorization_note": "Native open/read/close calls in the preserved top-call list are attributed to read. Exclusive timings are partial phase proxies, include profiler overhead, and do not profile evidence-reader worker threads separately."
+}

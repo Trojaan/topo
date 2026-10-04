@@ -41,7 +41,7 @@ testpaths = ["tests", "e2e"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests", "e2e", "scripts/check_architecture.py"]
+files = ["src", "tests", "e2e", "scripts/check_architecture.py", "scripts/topo_helpers.py"]
 mypy_path = "src"
 
 [tool.ruff]

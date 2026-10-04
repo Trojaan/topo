@@ -7,7 +7,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -19,6 +19,14 @@ if sys.platform == "win32":
 else:
     import fcntl
 
+from topo.delta_storage import (
+    CHECKPOINT_INTERVAL,
+    FORMAT_VERSION,
+    DeltaReader,
+    decode_generation,
+    encode_generation,
+    validate_physical_current,
+)
 from topo.errors import PackageIntegrityError, StaleGenerationError
 
 
@@ -29,6 +37,7 @@ class StoredPackageSnapshot:
     journal: bytes
     evidence_records: dict[str, bytes] = field(default_factory=dict)
     retained_generation_files: dict[str, dict[str, bytes]] | None = None
+    parallel_retained_validation: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,7 @@ class PackageCommit:
     journal: bytes
     evidence_records: dict[str, bytes] = field(default_factory=dict)
     evidence_inventory: bytes = b'{"paths":[]}\n'
+    collection_changes: dict[str, object] | None = None
 
 
 class StorageAdapter(Protocol):
@@ -51,6 +61,13 @@ class StorageAdapter(Protocol):
 @runtime_checkable
 class CurrentStorage(Protocol):
     def load_current(self) -> StoredPackageSnapshot | None: ...
+
+
+@runtime_checkable
+class ValidatedHistoryStorage(Protocol):
+    def load_verified_current(self) -> StoredPackageSnapshot | None: ...
+
+    def remember_validated_history(self, *, expected_generation: str) -> None: ...
 
 
 @runtime_checkable
@@ -139,6 +156,16 @@ def _read_generation(generation: Path) -> dict[str, bytes]:
             raise ValueError(f"generation contains a non-file entry: {path.name}")
         generation_files[path.name] = path.read_bytes()
     return generation_files
+
+
+def _physical_generation_digest(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for filename, payload in sorted(files.items()):
+        digest.update(filename.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(payload)
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _evidence_record_path(record_path: str) -> Path:
@@ -352,6 +379,219 @@ class FileSystemStorageAdapter:
 
     def __init__(self, package: Path) -> None:
         self._package = package
+        self._decoded_history: dict[str, dict[str, bytes]] | None = None
+
+    def _delta_format(self) -> bool:
+        marker = self._package / "storage-format.json"
+        if not marker.exists() and not marker.is_symlink():
+            return False
+        if marker.is_symlink() or not marker.is_file():
+            raise PackageIntegrityError("storage format marker is invalid")
+        if _json_object(marker.read_bytes()) != {"schema_version": FORMAT_VERSION}:
+            raise PackageIntegrityError("unsupported storage format")
+        return True
+
+    def _canonical_digest_locked(self) -> str:
+        digest = hashlib.sha256()
+        # DirEntry retains the directory-entry type, avoiding several redundant
+        # metadata syscalls for each tiny evidence file. Every file's bytes are
+        # still opened and hashed on every check; no mtime/size shortcut is used.
+        paths: list[tuple[str, str, bytes]] = []
+
+        def add_entry(entry: os.DirEntry[str], relative: str) -> None:
+            if entry.is_symlink():
+                raise PackageIntegrityError(
+                    "canonical package contains a symbolic link"
+                )
+            if entry.is_dir(follow_symlinks=False):
+                paths.append((relative, entry.path, b"D"))
+                walk(entry.path, relative)
+            elif entry.is_file(follow_symlinks=False):
+                paths.append((relative, entry.path, b"F"))
+            else:
+                raise PackageIntegrityError(
+                    "canonical package contains an invalid file"
+                )
+
+        def walk(directory: str, relative: str) -> None:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    add_entry(entry, f"{relative}/{entry.name}")
+
+        for name in ("CURRENT", "storage-format.json"):
+            path = self._package / name
+            if path.is_symlink() or not path.is_file():
+                raise PackageIntegrityError(
+                    "canonical package contains an invalid file"
+                )
+            paths.append((name, str(path), b"F"))
+        for relative in ("generations", "history", "evidence/records"):
+            root = self._package / relative
+            if root.is_symlink() or not root.is_dir():
+                raise PackageIntegrityError(
+                    "canonical package contains an invalid directory"
+                )
+            walk(str(root), relative)
+        for relative, file_path, kind in sorted(paths):
+            digest.update(kind)
+            digest.update(relative.encode())
+            digest.update(b"\0")
+            if kind == b"F":
+                with open(file_path, "rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _receipt_matches_locked(self, generation_id: str) -> bool:
+        receipt_path = self._package / "derived" / "validated-history.json"
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            return False
+        try:
+            return _json_object(receipt_path.read_bytes()) == {
+                "generation_id": generation_id,
+                "canonical_digest": self._canonical_digest_locked(),
+            }
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def load_verified_current(self) -> StoredPackageSnapshot | None:
+        if not self._package.exists() or not self._delta_format():
+            return None
+        with _exclusive_file_lock(self._package / "LOCK"):
+            if self._has_recovery_artifacts():
+                return None
+            generation_id, _generations, history = self._current_paths_locked()
+            if not self._receipt_matches_locked(generation_id):
+                return None
+            referenced = _referenced_evidence_record_paths(
+                self._package, {generation_id}
+            )
+            return StoredPackageSnapshot(
+                current_generation=generation_id,
+                generation_files=self._current_logical_locked(generation_id),
+                journal=(history / "journal.json").read_bytes(),
+                evidence_records=_read_evidence_records(self._package, referenced),
+            )
+
+    def remember_validated_history(self, *, expected_generation: str) -> None:
+        if not self._delta_format():
+            return
+        with _exclusive_file_lock(self._package / "LOCK"):
+            current, _generations, _history = self._current_paths_locked()
+            if current != expected_generation:
+                raise StaleGenerationError(current)
+            derived = self._package / "derived"
+            derived.mkdir(mode=0o700, exist_ok=True)
+            if derived.is_symlink():
+                raise PackageIntegrityError("derived directory is a symbolic link")
+            receipt = (
+                json.dumps(
+                    {
+                        "generation_id": current,
+                        "canonical_digest": self._canonical_digest_locked(),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode()
+            temporary = derived / ".validated-history.tmp"
+            if temporary.exists() or temporary.is_symlink():
+                _remove_artifact(temporary)
+            _write_durable(temporary, receipt)
+            os.replace(temporary, derived / "validated-history.json")
+            _sync_directory(derived)
+
+    def _logical_generations_locked(self) -> dict[str, dict[str, bytes]]:
+        journal = _json_object(
+            (self._package / "history" / "journal.json").read_bytes()
+        )
+        entries = journal.get("entries")
+        if not isinstance(entries, list):
+            raise PackageIntegrityError("invalid generation journal")
+        generations = self._package / "generations"
+        logical: dict[str, dict[str, bytes]] = {}
+        reader = DeltaReader()
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(
+                entry.get("generation_after"), str
+            ):
+                raise PackageIntegrityError("invalid generation journal")
+            generation_id = cast(str, entry["generation_after"])
+            path = generations / generation_id
+            if not path.exists():
+                reader.reset()
+                continue
+            try:
+                state = reader.read(generation_id, _read_generation(path))
+            except (KeyError, TypeError, ValueError) as error:
+                raise PackageIntegrityError(str(error)) from error
+            logical[generation_id] = state
+        return logical
+
+    def _current_logical_locked(self, generation_id: str) -> dict[str, bytes]:
+        cache = self._package / "derived" / "current" / generation_id
+        physical = _read_generation(self._package / "generations" / generation_id)
+        try:
+            validate_physical_current(physical)
+        except (KeyError, TypeError, ValueError) as error:
+            raise PackageIntegrityError(str(error)) from error
+        if cache.is_dir() and not cache.is_symlink():
+            try:
+                files = _read_generation(cache)
+                marker = _json_object(files.pop("storage-cache.json"))
+                if (
+                    marker == {"physical_digest": _physical_generation_digest(physical)}
+                    and files.get("manifest.json") == physical["manifest.json"]
+                ):
+                    _validate_generation_payloads(generation_id, files)
+                    return files
+            except (OSError, ValueError, TypeError):
+                pass
+        logical = self._logical_generations_locked()
+        if generation_id not in logical:
+            raise PackageIntegrityError("CURRENT has no generation")
+        files = logical[generation_id]
+        try:
+            self._store_current_cache_locked(generation_id, files)
+        except (OSError, PackageIntegrityError):
+            pass
+        return files
+
+    def _store_current_cache_locked(
+        self, generation_id: str, files: dict[str, bytes]
+    ) -> None:
+        root = self._package / "derived" / "current"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if root.is_symlink():
+            raise PackageIntegrityError("current cache path is a symbolic link")
+        destination = root / generation_id
+        if destination.exists() or destination.is_symlink():
+            _remove_artifact(destination)
+        temporary = Path(tempfile.mkdtemp(prefix=".current-", dir=str(root)))
+        os.chmod(temporary, 0o700)
+        try:
+            for filename, payload in files.items():
+                _write_durable(temporary / filename, payload)
+            physical = _read_generation(self._package / "generations" / generation_id)
+            _write_durable(
+                temporary / "storage-cache.json",
+                (
+                    json.dumps(
+                        {"physical_digest": _physical_generation_digest(physical)}
+                    )
+                    + "\n"
+                ).encode(),
+            )
+            _sync_directory(temporary)
+            os.replace(temporary, destination)
+            _sync_directory(root)
+            for old in root.iterdir():
+                if old != destination:
+                    _remove_artifact(old)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
 
     def load(self) -> StoredPackageSnapshot | None:
         if not self._package.exists():
@@ -381,7 +621,11 @@ class FileSystemStorageAdapter:
             )
             return StoredPackageSnapshot(
                 current_generation=generation_id,
-                generation_files=_read_generation(generations / generation_id),
+                generation_files=(
+                    self._current_logical_locked(generation_id)
+                    if self._delta_format()
+                    else _read_generation(generations / generation_id)
+                ),
                 journal=journal_path.read_bytes(),
                 evidence_records=_read_evidence_records(
                     self._package, referenced_evidence
@@ -390,20 +634,33 @@ class FileSystemStorageAdapter:
             )
 
     def _load_full_locked(self) -> StoredPackageSnapshot:
-        self._recover_and_validate_history()
+        recovered = self._recover_and_validate_history()
+        if self._delta_format() and not recovered:
+            raise PackageIntegrityError("package history cannot be proven safe")
         generation_id, generations, history = self._current_paths_locked()
-        generation_files = _read_generation(generations / generation_id)
-        retained_generation_files = {
-            path.name: _read_generation(path)
-            for path in generations.iterdir()
-            if path.name != generation_id
-        }
+        if self._delta_format():
+            all_files = dict(
+                self._decoded_history
+                if self._decoded_history is not None
+                else self._logical_generations_locked()
+            )
+            self._decoded_history = None
+            generation_files = all_files.pop(generation_id)
+            retained_generation_files = all_files
+        else:
+            generation_files = _read_generation(generations / generation_id)
+            retained_generation_files = {
+                path.name: _read_generation(path)
+                for path in generations.iterdir()
+                if path.name != generation_id
+            }
         return StoredPackageSnapshot(
             current_generation=generation_id,
             generation_files=generation_files,
             journal=(history / "journal.json").read_bytes(),
             evidence_records=_read_evidence_records(self._package),
             retained_generation_files=retained_generation_files,
+            parallel_retained_validation=self._delta_format(),
         )
 
     def _current_paths_locked(self) -> tuple[str, Path, Path]:
@@ -531,6 +788,26 @@ class FileSystemStorageAdapter:
             ) as error:
                 raise PackageIntegrityError(str(error)) from error
 
+            physical_generation_files = generation_files
+            if self._delta_format():
+                entries = _json_object(journal)["entries"]
+                physical_generation_files = {}
+                previous: dict[str, bytes] | None = None
+                count = 0
+                for entry in entries:
+                    generation_id = entry["generation_after"]
+                    logical_files = generation_files.get(generation_id)
+                    if logical_files is None:
+                        previous = None
+                        continue
+                    physical_generation_files[generation_id] = encode_generation(
+                        logical_files,
+                        previous,
+                        checkpoint=previous is None or count % CHECKPOINT_INTERVAL == 0,
+                    )
+                    previous = logical_files
+                    count += 1
+
             staging = self._package / "staging"
             temporary = Path(
                 tempfile.mkdtemp(prefix="privacy-scrub-", dir=str(staging))
@@ -539,7 +816,7 @@ class FileSystemStorageAdapter:
             try:
                 staged_generations = temporary / "generations"
                 staged_generations.mkdir(mode=0o700)
-                for generation_id, files in generation_files.items():
+                for generation_id, files in physical_generation_files.items():
                     destination = staged_generations / generation_id
                     destination.mkdir(mode=0o700)
                     for filename, payload in files.items():
@@ -619,11 +896,55 @@ class FileSystemStorageAdapter:
                 self._publish_initial(publication)
             return
         with _exclusive_file_lock(self._package / "LOCK"):
-            if not self._recover_and_validate_history():
+            valid_receipt = (
+                self._delta_format()
+                and not self._has_recovery_artifacts()
+                and self._receipt_matches_locked(expected_generation)
+            )
+            if not valid_receipt and not self._recover_and_validate_history():
                 raise PackageIntegrityError(
                     "package history cannot be proven safe for publication"
                 )
-            self._publish_update(publication, expected_generation)
+            if self._delta_format():
+                previous = self._current_logical_locked(expected_generation)
+                entries = _json_object(publication.journal)["entries"]
+                checkpoint = len(entries) % CHECKPOINT_INTERVAL == 1 or (
+                    isinstance(entries[-1], dict)
+                    and entries[-1].get("operation") == "context.compact"
+                )
+                physical = encode_generation(
+                    publication.generation_files,
+                    previous,
+                    checkpoint=checkpoint,
+                    changes=publication.collection_changes,
+                )
+                if publication.collection_changes is not None:
+                    reconstructed = decode_generation(
+                        publication.generation_id, physical, previous
+                    )
+                    if reconstructed != publication.generation_files:
+                        raise PackageIntegrityError(
+                            "engine change set does not match validated state"
+                        )
+                self._publish_update(
+                    PackageCommit(
+                        generation_id=publication.generation_id,
+                        generation_files=physical,
+                        journal=publication.journal,
+                        evidence_records=publication.evidence_records,
+                        evidence_inventory=publication.evidence_inventory,
+                    ),
+                    expected_generation,
+                    logical_files=publication.generation_files,
+                )
+                try:
+                    self._store_current_cache_locked(
+                        publication.generation_id, publication.generation_files
+                    )
+                except (OSError, PackageIntegrityError):
+                    pass
+            else:
+                self._publish_update(publication, expected_generation)
 
     @staticmethod
     def _validate_journal_tip(journal: bytes, generation_id: str) -> None:
@@ -637,6 +958,7 @@ class FileSystemStorageAdapter:
 
     def _published_generation_ids(self, journal_path: Path) -> set[str] | None:
         try:
+            self._decoded_history = None
             current_path = self._package / "CURRENT"
             if current_path.is_symlink() or journal_path.is_symlink():
                 return None
@@ -653,6 +975,9 @@ class FileSystemStorageAdapter:
             published: set[str] = set()
             seen: set[str] = set()
             previous: str | None = None
+            reader = DeltaReader()
+            delta_format = self._delta_format()
+            decoded: dict[str, dict[str, bytes]] = {}
             for entry_value in entries:
                 if not isinstance(entry_value, dict):
                     return None
@@ -666,12 +991,23 @@ class FileSystemStorageAdapter:
                 if generation_id in removed:
                     if generation_id == current:
                         return None
+                    if delta_format and generation_path.exists():
+                        reader.read(generation_id, _read_generation(generation_path))
+                    else:
+                        reader.reset()
                     previous = generation_id
                     continue
                 generation_files = _read_generation(generation_path)
-                manifest = _validate_generation_payloads(
-                    generation_id, generation_files
-                )
+                if delta_format:
+                    previous_files = reader.read(generation_id, generation_files)
+                    manifest = _validate_generation_payloads(
+                        generation_id, previous_files
+                    )
+                    decoded[generation_id] = previous_files
+                else:
+                    manifest = _validate_generation_payloads(
+                        generation_id, generation_files
+                    )
                 if manifest.get("based_on") != previous:
                     return None
                 if manifest.get("mutation_id") != entry_value.get("mutation_id"):
@@ -682,6 +1018,8 @@ class FileSystemStorageAdapter:
                 return None
             if not removed <= seen:
                 return None
+            if delta_format:
+                self._decoded_history = decoded
             return published
         except (
             OSError,
@@ -699,6 +1037,12 @@ class FileSystemStorageAdapter:
         if any(path.is_symlink() for path in (staging, generations, history)):
             return False
         for artifact in staging.iterdir():
+            if artifact.name.startswith(".rebase-old-"):
+                generation_id = artifact.name.removeprefix(".rebase-old-")
+                original = generations / generation_id
+                if not original.exists():
+                    os.replace(artifact, original)
+                    continue
             _remove_artifact(artifact)
         _sync_directory(staging)
 
@@ -718,6 +1062,38 @@ class FileSystemStorageAdapter:
 
         if published is None:
             return False
+
+        if self._delta_format():
+            try:
+                entries = _json_object(journal.read_bytes())["entries"]
+                removed = _declared_removed_generations(entries)
+                if removed is None:
+                    return False
+                logical = self._decoded_history
+                for index, entry in enumerate(entries):
+                    generation_id = entry["generation_after"]
+                    if generation_id in removed or index == 0:
+                        continue
+                    prior_id = entries[index - 1]["generation_after"]
+                    if prior_id not in removed:
+                        continue
+                    current_path = generations / generation_id
+                    if "storage.json" not in _read_generation(current_path):
+                        continue
+                    if logical is None:
+                        logical = self._logical_generations_locked()
+                    staged = staging / f".rebase-new-{generation_id}"
+                    old = staging / f".rebase-old-{generation_id}"
+                    staged.mkdir(mode=0o700)
+                    for filename, payload in logical[generation_id].items():
+                        _write_durable(staged / filename, payload)
+                    _sync_directory(staged)
+                    os.replace(current_path, old)
+                    os.replace(staged, current_path)
+                    _sync_directory(generations)
+                    shutil.rmtree(old)
+            except (KeyError, TypeError, ValueError, OSError, PackageIntegrityError):
+                return False
 
         for artifact in generations.iterdir():
             if artifact.name not in published:
@@ -758,17 +1134,27 @@ class FileSystemStorageAdapter:
         return True
 
     @staticmethod
-    def _stage_generation(publication: PackageCommit, destination: Path) -> None:
+    def _stage_generation(
+        publication: PackageCommit,
+        destination: Path,
+        *,
+        logical_files: dict[str, bytes] | None = None,
+    ) -> None:
         destination.mkdir(mode=0o700)
         for filename, payload in publication.generation_files.items():
             _write_durable(destination / filename, payload)
         _sync_directory(destination)
         _validate_generation_payloads(
-            publication.generation_id, _read_generation(destination)
+            publication.generation_id,
+            logical_files or _read_generation(destination),
         )
 
     def _publish_update(
-        self, publication: PackageCommit, expected_generation: str
+        self,
+        publication: PackageCommit,
+        expected_generation: str,
+        *,
+        logical_files: dict[str, bytes] | None = None,
     ) -> None:
         current = (self._package / "CURRENT").read_text(encoding="utf-8").strip()
         if current != expected_generation:
@@ -793,7 +1179,9 @@ class FileSystemStorageAdapter:
                     relative = _evidence_record_path(record_path)
                     _write_durable(staged_evidence / relative.name, payload)
                 _sync_directory(staged_evidence)
-            self._stage_generation(publication, staged_generation)
+            self._stage_generation(
+                publication, staged_generation, logical_files=logical_files
+            )
             os.replace(staged_generation, generations / publication.generation_id)
             _sync_directory(generations)
             os.replace(staged_inventory, published_inventory)
@@ -904,3 +1292,121 @@ class FileSystemStorageAdapter:
             if temporary.exists():
                 shutil.rmtree(temporary)
             raise
+
+
+def migrate_storage(
+    source: Path,
+    destination: Path,
+    *,
+    validate: Callable[[StoredPackageSnapshot], object],
+) -> tuple[str, int]:
+    """Copy a verified legacy package to a new, atomically published delta package."""
+    if source.is_symlink() or not source.is_dir():
+        raise PackageIntegrityError("source package must be a real directory")
+    if source.resolve() == destination.resolve():
+        raise ValueError("storage migration requires a different output path")
+    if destination.resolve().is_relative_to(source.resolve()):
+        raise ValueError("storage migration output cannot be inside the source package")
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(str(destination))
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(str(destination.parent))
+    source_adapter = FileSystemStorageAdapter(source)
+    with _exclusive_file_lock(source / "LOCK"):
+        if source_adapter._delta_format():
+            raise ValueError("package already uses delta storage")
+        snapshot = source_adapter._load_full_locked()
+        validate(snapshot)
+        all_files = {
+            snapshot.current_generation: snapshot.generation_files,
+            **(snapshot.retained_generation_files or {}),
+        }
+        temporary = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.staging-", dir=str(destination.parent)
+            )
+        )
+        os.chmod(temporary, 0o700)
+        try:
+            for relative in (
+                "generations",
+                "staging",
+                "history",
+                "history/evidence-inventory",
+                "evidence",
+                "evidence/records",
+            ):
+                (temporary / relative).mkdir(mode=0o700)
+            _write_durable(temporary / "LOCK", b"")
+            _write_durable(
+                temporary / "storage-format.json",
+                (json.dumps({"schema_version": FORMAT_VERSION}) + "\n").encode(),
+            )
+            _write_durable(
+                temporary / "CURRENT", (snapshot.current_generation + "\n").encode()
+            )
+            _write_durable(temporary / "history" / "journal.json", snapshot.journal)
+            for record_path, payload in snapshot.evidence_records.items():
+                _write_durable(temporary / _evidence_record_path(record_path), payload)
+            source_inventories = source / "history" / "evidence-inventory"
+            for path in source_inventories.iterdir():
+                if not path.is_file() or path.is_symlink():
+                    raise PackageIntegrityError("invalid evidence inventory")
+                _write_durable(
+                    temporary / "history" / "evidence-inventory" / path.name,
+                    path.read_bytes(),
+                )
+            previous: dict[str, bytes] | None = None
+            count = 0
+            entries = _json_object(snapshot.journal)["entries"]
+            for entry in entries:
+                generation_id = entry["generation_after"]
+                files = all_files.get(generation_id)
+                if files is None:
+                    previous = None
+                    continue
+                physical = encode_generation(
+                    files,
+                    previous,
+                    checkpoint=previous is None or count % CHECKPOINT_INTERVAL == 0,
+                )
+                generation = temporary / "generations" / generation_id
+                generation.mkdir(mode=0o700)
+                for filename, payload in physical.items():
+                    _write_durable(generation / filename, payload)
+                _sync_directory(generation)
+                previous = files
+                count += 1
+            for relative in (
+                "generations",
+                "history/evidence-inventory",
+                "history",
+                "evidence/records",
+                "evidence",
+                "staging",
+            ):
+                _sync_directory(temporary / relative)
+            _sync_directory(temporary)
+            migrated_adapter = FileSystemStorageAdapter(temporary)
+            migrated = migrated_adapter.load()
+            if migrated is None:
+                raise PackageIntegrityError("migrated package is missing")
+            validate(migrated)
+            if migrated.generation_files != snapshot.generation_files:
+                raise PackageIntegrityError("migration changed the current snapshot")
+            try:
+                migrated_adapter.remember_validated_history(
+                    expected_generation=snapshot.current_generation
+                )
+            except (OSError, PackageIntegrityError):
+                pass
+            output_lock = destination.parent / f".{destination.name}.lock"
+            with _exclusive_file_lock(output_lock):
+                if destination.exists() or destination.is_symlink():
+                    raise FileExistsError(str(destination))
+                os.replace(temporary, destination)
+                _sync_directory(destination.parent)
+            return snapshot.current_generation, count
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)

@@ -4,10 +4,11 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from topo.errors import PackageIntegrityError
@@ -560,10 +561,87 @@ class ValidatedPackage:
     source_records: dict[str, bytes]
     rule_package_files: dict[str, bytes]
     initialization_result: ContextInitResult
+    generation_files: dict[str, bytes]
+
+
+def _same_json_types(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return all(_same_json_types(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return all(_same_json_types(a, b) for a, b in zip(left, right, strict=True))
+    return True
+
+
+def _same_record_value(left: Any, right: Any) -> bool:
+    if left != right:
+        return False
+    # Fixed record fields have strict string/reference types. These are the
+    # fields that admit arbitrary JSON, where Python's 1 == True == 1.0 is unsafe.
+    return all(
+        _same_json_types(left.get(key), right.get(key))
+        for key in ("object_value", "module_data", "statement", "proposed_assertion")
+    )
+
+
+class _ValidationRound:
+    """Call-local typed record reuse; every relational invariant is rechecked."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, tuple[object, Any]]] = {}
+        self.sources: dict[bytes, SourceImportRecord] = {}
+        self.projections: dict[
+            tuple[int, ...], tuple[tuple[Any, ...], dict[str, AssertionRecord]]
+        ] = {}
+
+    def collection(self, filename: str, payload: bytes, record_type: Any) -> Any:
+        raw = json.loads(payload)
+        model = CanonicalCollection[record_type]
+        # Validate the envelope with the same strict JSON model, including extras.
+        envelope = model.model_validate_json(
+            json.dumps({**raw, "records": []}), strict=True
+        )
+        if not isinstance(raw.get("records"), list):
+            return model.model_validate_json(payload, strict=True)
+        if filename not in self.records:
+            validated = model.model_validate_json(payload, strict=True)
+            self.records[filename] = {
+                record.id: (item, record)
+                for item, record in zip(raw["records"], validated.records, strict=True)
+            }
+            return validated
+        previous = self.records[filename]
+        current: dict[str, tuple[object, Any]] = {}
+        records = []
+        adapter = TypeAdapter(record_type)
+        for item in raw["records"]:
+            identifier = item.get("id") if isinstance(item, dict) else None
+            cached = previous.get(identifier) if isinstance(identifier, str) else None
+            record = (
+                cached[1]
+                if cached is not None and _same_record_value(cached[0], item)
+                else adapter.validate_json(json.dumps(item), strict=True)
+            )
+            records.append(record)
+            current[record.id] = (item, record)
+        previous.update(current)
+        self.records[filename] = previous
+        return envelope.model_copy(update={"records": tuple(records)})
+
+    def source(self, payload: bytes) -> SourceImportRecord:
+        if payload not in self.sources:
+            self.sources[payload] = SourceImportRecord.model_validate_json(
+                payload, strict=True
+            )
+        return self.sources[payload]
 
 
 def _validate_snapshot(
-    snapshot: StoredPackageSnapshot, *, require_journal_tip: bool = True
+    snapshot: StoredPackageSnapshot,
+    *,
+    require_journal_tip: bool = True,
+    reuse: _ValidationRound | None = None,
 ) -> ValidatedPackage:
     generation_files = snapshot.generation_files
     manifest_payload = generation_files.get("manifest.json")
@@ -636,17 +714,27 @@ def _validate_snapshot(
             raise PackageIntegrityError(
                 "active rule package pin does not match artifact"
             )
-    entities = CanonicalCollection[EntityRecord].model_validate_json(
-        generation_files["entities.json"], strict=True
+
+    def collection(filename: str, record_type: Any) -> Any:
+        if reuse is not None:
+            return reuse.collection(filename, generation_files[filename], record_type)
+        return CanonicalCollection[record_type].model_validate_json(
+            generation_files[filename], strict=True
+        )
+
+    entities = cast(
+        CanonicalCollection[EntityRecord], collection("entities.json", EntityRecord)
     )
-    assertions = CanonicalCollection[AssertionRecord].model_validate_json(
-        generation_files["assertions.json"], strict=True
+    assertions = cast(
+        CanonicalCollection[AssertionRecord],
+        collection("assertions.json", AssertionRecord),
     )
-    evidence = CanonicalCollection[EvidenceRecord].model_validate_json(
-        generation_files["evidence.json"], strict=True
+    evidence = cast(
+        CanonicalCollection[EvidenceRecord], collection("evidence.json", EvidenceRecord)
     )
-    proposals = CanonicalCollection[ProposalRecord].model_validate_json(
-        generation_files["proposals.json"], strict=True
+    proposals = cast(
+        CanonicalCollection[ProposalRecord],
+        collection("proposals.json", ProposalRecord),
     )
     for filename, records in (
         ("entities.json", entities.records),
@@ -771,7 +859,11 @@ def _validate_snapshot(
         checksum = "sha256:" + hashlib.sha256(payload).hexdigest()
         if checksum != record.source.record_checksum:
             raise PackageIntegrityError("source evidence checksum does not match")
-        source_record = SourceImportRecord.model_validate_json(payload, strict=True)
+        source_record = (
+            reuse.source(payload)
+            if reuse is not None
+            else SourceImportRecord.model_validate_json(payload, strict=True)
+        )
         if (
             source_record.source_id != record.source.source_id
             or source_record.record_id != record.source.record_id
@@ -860,6 +952,29 @@ def _validate_snapshot(
         by_predicate = {
             assertion.predicate: assertion for assertion in source_observations
         }
+        if not source_observations:
+            raise PackageIntegrityError(
+                "source evidence must have four literal assertions"
+            )
+        transaction_id = source_observations[0].subject_ref.id
+        if entity_by_id[transaction_id].entity_type != "transaction":
+            raise PackageIntegrityError("source evidence subject must be a transaction")
+        previous_transaction = source_transactions.setdefault(identity, transaction_id)
+        if previous_transaction != transaction_id:
+            raise PackageIntegrityError(
+                "source identity must resolve to one transaction"
+            )
+        projection_inputs = (
+            record,
+            source_import,
+            entity_by_id[transaction_id],
+            *source_observations,
+            *classification_proposals_by_evidence.get(record.id, ()),
+        )
+        projection_key = tuple(id(item) for item in projection_inputs)
+        if reuse is not None and projection_key in reuse.projections:
+            projections[record.id] = reuse.projections[projection_key][1]
+            continue
         expected_values = {
             "domain.accounts/posting": ("source_account", source_import.source_id),
             "domain.cashflow/booking_date": (
@@ -875,14 +990,6 @@ def _validate_snapshot(
         if len(source_observations) != 4 or set(by_predicate) != set(expected_values):
             raise PackageIntegrityError(
                 "source evidence must have four literal assertions"
-            )
-        transaction_id = source_observations[0].subject_ref.id
-        if entity_by_id[transaction_id].entity_type != "transaction":
-            raise PackageIntegrityError("source evidence subject must be a transaction")
-        previous_transaction = source_transactions.setdefault(identity, transaction_id)
-        if previous_transaction != transaction_id:
-            raise PackageIntegrityError(
-                "source identity must resolve to one transaction"
             )
         expected_end = source_import.booking_date + timedelta(days=1)
         for predicate, (value_type, value) in expected_values.items():
@@ -937,6 +1044,10 @@ def _validate_snapshot(
                 raise PackageIntegrityError(
                     "source classification proposal does not match its record"
                 )
+
+        if reuse is not None:
+            # Hold the exact dependency objects alive to prevent identity reuse.
+            reuse.projections[projection_key] = (projection_inputs, by_predicate)
 
     if any(count != 1 for count in source_root_counts.values()):
         raise PackageIntegrityError("source identity must have one lineage root")
@@ -1082,15 +1193,23 @@ def _validate_snapshot(
         source_records=source_records,
         rule_package_files=rule_package_files,
         initialization_result=result,
+        generation_files=generation_files,
     )
 
 
 def load_and_validate_generation(
     snapshot: StoredPackageSnapshot,
+    *,
+    incremental: bool = True,
 ) -> ValidatedPackage:
     """Turn untrusted package bytes into a completely validated initial package."""
     try:
-        current = _validate_snapshot(snapshot)
+        reuse = (
+            _ValidationRound()
+            if incremental and snapshot.parallel_retained_validation
+            else None
+        )
+        current = _validate_snapshot(snapshot, reuse=reuse)
         referenced_source_records = set(current.source_records)
         retained = snapshot.retained_generation_files
         if retained is not None:
@@ -1112,8 +1231,12 @@ def load_and_validate_generation(
                 raise PackageIntegrityError(
                     "retained generations do not match the journal"
                 )
-            for generation_id, generation_files in retained.items():
-                retained_package = _validate_snapshot(
+
+            def validate_retained(
+                item: tuple[str, dict[str, bytes]],
+            ) -> ValidatedPackage:
+                generation_id, generation_files = item
+                return _validate_snapshot(
                     StoredPackageSnapshot(
                         current_generation=generation_id,
                         generation_files=generation_files,
@@ -1121,7 +1244,11 @@ def load_and_validate_generation(
                         evidence_records=snapshot.evidence_records,
                     ),
                     require_journal_tip=False,
+                    reuse=reuse,
                 )
+
+            for item in retained.items():
+                retained_package = validate_retained(item)
                 referenced_source_records.update(retained_package.source_records)
         if set(snapshot.evidence_records) != referenced_source_records:
             raise PackageIntegrityError(

@@ -28,6 +28,10 @@ def parse_json(process: subprocess.CompletedProcess[str]) -> dict[str, Any]:
 
 
 def test_cli_help_and_usage_errors_are_discoverable() -> None:
+    assert "upgrade" in run_topo("--help").stdout
+    upgrade = run_topo("upgrade", "--json")
+    assert upgrade.returncode == 2
+    assert "package manager" in parse_json(upgrade)["message"]
     described = parse_json(run_topo("contract", "describe", "--json"))
     commands = {item["command"]: item for item in described["result"]["commands"]}
     assert (

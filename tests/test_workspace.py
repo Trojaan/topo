@@ -83,14 +83,7 @@ def test_workspace_init_is_agent_ready_and_idempotent(tmp_path: Path) -> None:
         assert "Zojuist gewijzigd" in content
         assert "Volgende vraag" in content
         assert "Check the installed version with `topo --version`" in content
-        assert (
-            "curl -fsSL https://raw.githubusercontent.com/Trojaan/topo/main/install.sh"
-            in content
-        )
-        assert (
-            "irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex"
-            in content
-        )
+        assert "Run `topo upgrade`" in content
     gitignore = (workspace / ".gitignore").read_text(encoding="utf-8")
     assert "context.topo/" in gitignore
     assert "imports/" in gitignore

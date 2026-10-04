@@ -364,6 +364,7 @@ class JournalEntry(TopoModel):
         "context.init",
         "source.import",
         "proposal.submit",
+        "proposal.submit-batch",
         "proposal.confirm",
         "proposal.correct",
         "proposal.reject",
@@ -823,6 +824,11 @@ class ProposalSubmitRequest(MutationRequest):
             if self.actor.actor_id != self.workflow_response.producer.producer_id:
                 raise ValueError("workflow producer must match the request actor")
         return self
+
+
+class ProposalBatchSubmitRequest(MutationRequest):
+    proposals: tuple[ProposedProposal, ...] = Field(min_length=1, max_length=1000)
+    authorization: Authorization | None = None
 
 
 class ProposedProposal(TopoModel):

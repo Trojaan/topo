@@ -14,7 +14,10 @@ from pydantic import JsonValue, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from topo import __version__
-from topo.canonical_validation import record_collection_schema
+from topo.canonical_validation import (
+    load_and_validate_generation,
+    record_collection_schema,
+)
 from topo.contracts import (
     CLI_COMMANDS,
     COMMANDS,
@@ -50,6 +53,7 @@ from topo.models import (
     Outcome,
     ProposalBatchConfirmRequest,
     ProposalBatchRejectRequest,
+    ProposalBatchSubmitRequest,
     ProposalConfirmRequest,
     ProposalCorrectRequest,
     ProposalRejectRequest,
@@ -67,7 +71,8 @@ from topo.models import (
     model_to_json_object,
 )
 from topo.rules import RulePackageError
-from topo.storage import FileSystemStorageAdapter
+from topo.storage import FileSystemStorageAdapter, migrate_storage
+from topo.upgrade import UpgradeError, upgrade
 from topo.workspace import initialize_workspace
 
 
@@ -115,8 +120,15 @@ def _normalize_request(
         normalized.setdefault("reason", "Initialize local Topo context")
     if command == "workspace.init":
         normalized["directory"] = str(args.directory)
-    if command in {"context.status", "context.verify", "context.summary"}:
+    if command in {
+        "context.status",
+        "context.verify",
+        "context.summary",
+        "context.storage_migrate",
+    }:
         normalized["package"] = str(args.package)
+    if command == "context.storage_migrate":
+        normalized["output"] = str(args.output)
     if command == "context.summary":
         normalized["as_of_date"] = args.as_of
     if command == "contract.record_schema":
@@ -534,6 +546,9 @@ def _parser() -> argparse.ArgumentParser:
 
     workspace_init = commands.add_parser("init")
     workspace_init.add_argument("directory", nargs="?", type=Path, default=Path("."))
+    commands.add_parser(
+        "upgrade", help="Upgrade the installed standalone CLI to the latest release."
+    )
 
     contract = commands.add_parser("contract")
     contract_commands = contract.add_subparsers(dest="contract_command", required=True)
@@ -560,6 +575,9 @@ def _parser() -> argparse.ArgumentParser:
     summary.add_argument("--as-of", required=True, metavar="DATE")
     verify = context_commands.add_parser("verify")
     verify.add_argument("--package", type=Path, required=True)
+    storage_migrate = context_commands.add_parser("storage-migrate")
+    storage_migrate.add_argument("--package", type=Path, required=True)
+    storage_migrate.add_argument("--output", type=Path, required=True)
     for name in ("migrate", "restore", "compact", "privacy-scrub"):
         lifecycle = context_commands.add_parser(name)
         lifecycle.add_argument("--package", type=Path, required=True)
@@ -568,6 +586,7 @@ def _parser() -> argparse.ArgumentParser:
     proposal_commands = proposal.add_subparsers(dest="proposal_command", required=True)
     for name in (
         "submit",
+        "submit-batch",
         "confirm",
         "correct",
         "reject",
@@ -675,6 +694,8 @@ def _parser() -> argparse.ArgumentParser:
             if isinstance(action, argparse._SubParsersAction)
         )
         if not nested:
+            if group.prog == "topo upgrade":
+                continue
             group.add_argument(
                 "--request",
                 type=Path,
@@ -900,6 +921,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(f"{reason}\n{_usage_hint(reason)}", file=sys.stderr)
         return 2
+    if args.group == "upgrade":
+        try:
+            upgrade_result = upgrade()
+        except UpgradeError as error:
+            if json_output:
+                _write_json({"status": "error", "message": str(error)})
+            else:
+                print(f"Upgrade failed: {error}", file=sys.stderr)
+            return 2
+        if json_output:
+            _write_json(cast(JsonObject, upgrade_result))
+        elif upgrade_result["status"] == "current":
+            print(f"Topo {upgrade_result['version']} is already the latest version.")
+        elif upgrade_result["status"] == "scheduled":
+            print(
+                f"Topo {upgrade_result['version']} will be installed after this command exits."
+            )
+        else:
+            print(
+                f"Upgraded Topo to {upgrade_result['version']} "
+                f"at {upgrade_result['path']}."
+            )
+        return 0
     if args.group == "init":
         command = "workspace.init"
     elif args.group == "contract":
@@ -1032,6 +1076,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context_id=verify_result.context_id,
                     generation_before=verify_result.generation_id,
                     generation_after=verify_result.generation_id,
+                )
+            )
+            return 0
+        if command == "context.storage_migrate":
+            generation, count = migrate_storage(
+                args.package, args.output, validate=load_and_validate_generation
+            )
+            verified = EngineCore(
+                FileSystemStorageAdapter(args.output)
+            ).verify_context()
+            _write_json(
+                _success_envelope(
+                    command,
+                    request,
+                    {
+                        "storage_format": "topo.storage/0.2",
+                        "output": str(args.output),
+                        "generations_migrated": count,
+                    },
+                    context_id=verified.context_id,
+                    generation_before=generation,
+                    generation_after=generation,
                 )
             )
             return 0
@@ -1227,7 +1293,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if command.startswith("proposal."):
             engine = EngineCore(FileSystemStorageAdapter(args.package))
-            if command == "proposal.submit":
+            if command == "proposal.submit-batch":
+                outcome = engine.submit_proposal_batch(
+                    ProposalBatchSubmitRequest.model_validate_json(
+                        json.dumps(request), strict=True
+                    )
+                )
+            elif command == "proposal.submit":
                 outcome = engine.submit_proposal(
                     ProposalSubmitRequest.model_validate_json(
                         json.dumps(request), strict=True
@@ -1282,16 +1354,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     except (ContextAlreadyExistsError, FileExistsError):
-        package_argument = getattr(args, "package", None)
+        package_argument = (
+            args.output
+            if command == "context.storage_migrate"
+            else getattr(args, "package", None)
+        )
         if package_argument is None:
             package_argument = Path(args.directory) / "context.topo"
+        argument_path = (
+            "/output" if command == "context.storage_migrate" else "/package"
+        )
         _write_json(
             _error_envelope(
                 command,
                 request,
                 code="CONTEXT_ALREADY_EXISTS",
                 message_key="diagnostic.context_already_exists",
-                path="/package",
+                path=argument_path,
                 params={"package": str(package_argument)},
                 retryable=False,
             )

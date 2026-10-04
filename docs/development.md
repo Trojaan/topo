@@ -71,13 +71,60 @@ remain historical and are not treated as diagnostics for the current generation.
 
 Every command that consumes JSON accepts `--request PATH` or stdin. Use
 `topo <group> <command> --help` for the exact contract ID and transport; use
-`topo contract describe --json` for the complete CLI-to-contract mapping.
+`topo contract describe --json` for the complete mapping of financial-context
+commands. `topo upgrade` and `topo --version` are installation commands outside
+those context contracts.
 `contract describe` and `contract schema` describe the CLI itself and do not
 need `--package`. With `--json`, usage errors include `INVALID_USAGE` and a hint.
 
 The result reports the current generation plus the numbers of retained
 generations and raw evidence records checked. Mutating commands perform this
 full-history validation automatically.
+
+## Preparing a mutation wave
+
+Keep request payloads and generated requests in a private temporary directory or
+the workspace's ignored `imports/` directory. The tracked helper lives in
+`scripts/`, because `imports/` is ignored. It creates the UUIDv7 operation ID,
+actor and reason shell, reads `context_id` and `expected_generation` from the
+validated current package, and checks the published request schema. It never
+calls a mutating Topo command. For example:
+
+```bash
+uv run python scripts/topo_helpers.py build \
+  --package /tmp/example.topo --command source.import \
+  --payload /tmp/import-payload.json --output /tmp/import-request.json \
+  --actor-type source_adapter --actor-id demo-adapter --reason 'Import reviewed records'
+uv run python scripts/topo_helpers.py validate \
+  --command source.import --request /tmp/import-request.json
+uv run python scripts/topo_helpers.py refresh \
+  --package /tmp/example.topo --command source.import \
+  --request /tmp/import-request.json
+```
+
+The payload contains the command-specific fields; the helper supplies
+`authorization: null` and a `batch_id` when the contract requires them. It rejects
+payloads that override generated shell fields. Prepare all requests in a wave
+after one substantive read of the state. Execute them sequentially, refreshing
+each pending request immediately before use and inspecting each result before
+continuing. A refresh keeps the request's operation ID and changes only its
+expected generation. Do not refresh a request that already ran or one with
+authorization filled in.
+
+For an authorization-required operation, preview it with `authorization: null`,
+have a person authorize the returned `preview_ref`, and submit the authorized
+copy immediately in the same generation and with the same operation ID. Confirm
+each proposal after its preview before starting the next mutation; collecting
+many previews first makes them stale. `proposal.submit` has no effect-free preview.
+Check its shape with the helper's `validate` command, never by submitting a
+trial request. Shape validation cannot guarantee domain validity; the actual
+submit can still reject an invalid assertion or evidence reference.
+
+For reviewed source classifications, use `source classify-batch` rather than one
+decision per transaction; it publishes thousands of classifications as one
+generation. `discover run` is effect-free. Prefer `workflow next` and
+`workflow respond` when a typed action is available, then return to
+`workflow next` after a successful mutation.
 
 After initialization, an adapter can submit the versioned `source.import` JSON
 contract through stdin (or `--request`) with:
@@ -110,6 +157,21 @@ protect additional `restore_generations`. Privacy scrub requires one or more
 unique `evidence_ids`; it permanently removes them from the Topo-managed package,
 but cannot erase SSD remnants, operating-system snapshots, synchronized copies,
 or external backups.
+
+To move an existing package to delta storage, first choose a new destination path:
+
+```bash
+uv run topo context storage-migrate --package ./context.topo --output ./context-delta.topo --json
+uv run topo context verify --package ./context-delta.topo --json
+```
+
+The source package is left intact. The command preserves `CURRENT`, identifiers,
+evidence and journal history and refuses to overwrite an existing destination.
+Continue using the destination path after checking it. Storage migration does not
+publish a financial generation and is separate from `context migrate`, which
+changes the versioned financial context schema. If a later privacy-scrub must also
+cover the old copy, remove or scrub that copy separately; it is outside the new
+package's managed boundary.
 
 Run effect-free recurring cashflow discovery with a `discover.run` request that
 contains `context_id`, `analysis_scope`, and `as_of_date`:
@@ -356,5 +418,27 @@ Pushing a tag matching `v<package-version>` runs the release matrix for macOS
 x64/arm64, glibc Linux x64/arm64, and Windows x64. Each executable completes the
 contract, workspace-init, and context-status smoke flow before upload. After all
 artifacts are published, the same workflow runs `install.sh` or `install.ps1`
-against the public release. Re-run an installer to upgrade; there is no in-CLI
-self-update command in v0.2.
+against the public release. A standalone install can run `topo upgrade` to
+download the latest published release for its platform. The command checks the
+downloaded executable's version before replacing the current binary. On Windows,
+replacement is scheduled for immediately after the CLI exits because Windows
+locks the running executable. Python and `uv` installations use their package
+manager to upgrade instead.
+
+### Bulk proposal submission and performance reproduction
+
+Use `topo proposal submit-batch --package PACKAGE --json` with the usual mutation
+metadata, a `proposals` array of 1–1,000 ordinary assertion-proposal inputs, and
+optional `authorization`. Without authorization the command returns a preview;
+a person authorizes its exact `preview_ref` before the same request is executed.
+One operation ID covers all items. The result's `items` array maps every input
+index to its open proposal ID. A batch never confirms those proposals as facts.
+Inspect its published contract with `topo contract schema proposal.submit-batch`.
+
+Run `uv run python scripts/benchmark_mutations.py --submit-round --output /tmp/topo-performance.json`
+for an isolated synthetic 7,500-record, 21-generation fixture, complete verify,
+three daily reads, ten authorized single-record source mutations and peak memory.
+The reference disables record/fragment reuse and supplied change sets while
+preserving the same invariants; it is not an archived pre-change executable.
+Ordinary elapsed times and instrumented exclusive-function timings are separate.
+See [Performance measurements](performance.md) for the recorded results.
