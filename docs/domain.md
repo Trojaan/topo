@@ -1,5 +1,8 @@
 # Domain and safety boundary
 
+Voor de zelfstandige actuele-toestand-engine `topo2`, zie [Topo 2](topo2.md).
+De bestaande generatie- en voorstelcontracten op deze pagina gelden voor `topo`.
+
 Topo maps a person's or household's financial context. It preserves facts,
 relationships, time, evidence, assumptions, and derived results so every outcome
 can explain its inputs. The full Dutch ubiquitous language is in `CONTEXT.md`.

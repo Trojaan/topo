@@ -112,6 +112,34 @@ def main() -> int:
                     "Move orchestration outward or introduce a foundation-level protocol; "
                     "do not reverse the dependency direction in docs/architecture.md."
                 )
+    # Topo 2 has its own boundary: no legacy imports, no orchestration inward.
+    v2_forbidden = {
+        "models": {"cli", "engine", "storage"},
+        "storage": {"cli", "engine"},
+        "engine": {"cli"},
+    }
+    for path in sorted((ROOT / "src" / "topo_v2").glob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
+                if node.module == "topo_v2":
+                    modules.extend("topo_v2." + alias.name for alias in node.names)
+            elif isinstance(node, ast.Import):
+                modules.extend(alias.name for alias in node.names)
+            for module in modules:
+                parts = module.split(".")
+                legacy = parts[0] == "topo"
+                reversed_dependency = (
+                    parts[0] == "topo_v2"
+                    and len(parts) > 1
+                    and parts[1] in v2_forbidden.get(path.stem, set())
+                )
+                if legacy or reversed_dependency:
+                    violations.append(
+                        f"{path.relative_to(ROOT)}:{getattr(node, 'lineno', 0)}: forbidden import {module}"
+                    )
     if violations:
         print("\n".join(violations))
         return 1

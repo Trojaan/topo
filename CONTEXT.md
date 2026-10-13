@@ -1,5 +1,12 @@
 # Topo — begrippen
 
+## Versiegrens
+
+De begrippen rond historie, generaties, beweringen en voorstellen hieronder gelden
+voor de bestaande Topo-engine. Topo 2 bewaart uitsluitend complete actuele records
+voor rekeningen, bezittingen en doelen, zonder historie en zonder afzonderlijke
+toerekening. Zie [Topo 2](docs/topo2.md) voor het vereenvoudigde model.
+
 ## Topo
 
 De productnaam van de financiële contextengine. Topo helpt een gebruiker diens eigen financiële werkelijkheid in kaart te brengen en presenteert zich niet als financieel adviseur.

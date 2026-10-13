@@ -36,20 +36,36 @@ else
 fi
 [[ -n "$version" ]] || fail "could not determine the latest Topo release"
 
-archive="topo-${platform}-${architecture}.zip"
-url="https://github.com/$REPO/releases/download/$version/$archive"
+# Preserve the single-binary topo archive expected by existing topo upgrade.
+[[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || fail "invalid release version: $version"
+commands=(topo)
+if (( 10#${BASH_REMATCH[1]} > 0 || 10#${BASH_REMATCH[2]} >= 6 )); then
+  commands+=(topo2)
+fi
+expected_version="${version#v}"
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/topo-install.XXXXXX")"
 trap 'rm -rf "$download_dir"' EXIT
 
 echo "Installing Topo $version for ${platform}-${architecture}..."
-curl -fsSL --retry 5 --retry-all-errors "$url" -o "$download_dir/$archive" || fail "failed to download $url"
-unzip -q "$download_dir/$archive" -d "$download_dir/extracted"
-[[ -f "$download_dir/extracted/topo" ]] || fail "release archive has no topo binary"
+# Validate every download before replacing any existing command.
+for executable in "${commands[@]}"; do
+  archive="${executable}-${platform}-${architecture}.zip"
+  url="https://github.com/$REPO/releases/download/$version/$archive"
+  curl -fsSL --retry 5 --retry-all-errors "$url" -o "$download_dir/$archive" || fail "failed to download $url"
+  unzip -q "$download_dir/$archive" -d "$download_dir/$executable"
+  downloaded="$download_dir/$executable/$executable"
+  [[ -f "$downloaded" ]] || fail "release archive has no $executable binary"
+  chmod +x "$downloaded"
+  actual_version="$("$downloaded" --version)" || fail "$executable cannot run"
+  [[ "$actual_version" = "$executable $expected_version" ]] || fail "$executable reports a different version"
+done
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$download_dir/extracted/topo" "$INSTALL_DIR/.topo.new"
-mv -f "$INSTALL_DIR/.topo.new" "$INSTALL_DIR/topo"
-"$INSTALL_DIR/topo" --version
+for executable in "${commands[@]}"; do
+  install -m 0755 "$download_dir/$executable/$executable" "$INSTALL_DIR/.$executable.new"
+  mv -f "$INSTALL_DIR/.$executable.new" "$INSTALL_DIR/$executable"
+  "$INSTALL_DIR/$executable" --version
+done
 
 add_to_path() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
@@ -88,4 +104,6 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   add_to_path
 fi
 
-echo "Topo is installed at $INSTALL_DIR/topo"
+for executable in "${commands[@]}"; do
+  echo "$executable is installed at $INSTALL_DIR/$executable"
+done

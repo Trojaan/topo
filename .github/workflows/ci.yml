@@ -58,7 +58,10 @@ jobs:
       - run: uv build
       - run: uv venv --python 3.14 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/*.whl
-      - run: .wheel-venv/bin/python -c "import topo"
+      - run: .wheel-venv/bin/python -c "import topo; import topo_v2"
+      - run: .wheel-venv/bin/topo2 contract --json
+      - run: .wheel-venv/bin/topo2 init --context "${RUNNER_TEMP}/context.json" --json
+      - run: .wheel-venv/bin/topo2 summary --context "${RUNNER_TEMP}/context.json" --json
       - run: .wheel-venv/bin/topo contract describe --json
       - run: .wheel-venv/bin/topo context init --package "${RUNNER_TEMP}/smoke.topo" --json
 
@@ -72,7 +75,15 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --no-dev --group build
       - run: uv run pyinstaller --clean topo.spec
+      - run: uv run pyinstaller --clean topo2.spec
       - run: dist/topo --version
       - run: dist/topo contract describe --json
       - run: dist/topo init "${RUNNER_TEMP}/workspace" --json
       - run: dist/topo context status --package "${RUNNER_TEMP}/workspace/context.topo" --json
+      - run: dist/topo2 --version
+      - run: uv run python scripts/smoke_topo2.py dist/topo2 --output test-results/topo2-smoke.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: topo2-standalone-proof
+          path: test-results/topo2-smoke.json
+          if-no-files-found: error

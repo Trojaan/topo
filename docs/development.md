@@ -1,5 +1,8 @@
 # Development
 
+Voor de zelfstandige actuele-toestand-engine `topo2`, zie [Topo 2](topo2.md).
+De bestaande generatie- en voorstelcontracten op deze pagina gelden voor `topo`.
+
 ## Prerequisites
 
 - Python 3.12 or newer (the project pins its preferred version in `.python-version`)
@@ -405,25 +408,34 @@ Never use real financial data in tests or committed fixtures.
 ## Standalone builds and releases
 
 The package version has one source of truth in `src/topo/__about__.py`; Hatchling,
-the wheel, `topo --version`, and PyInstaller all consume it. Build a local
-standalone executable with:
+the wheel, `topo --version`, `topo2 --version` (via distribution metadata), and
+PyInstaller all consume it. Build local
+standalone executables with:
 
 ```bash
 uv sync --frozen --no-dev --group build
 uv run pyinstaller --clean topo.spec
+uv run pyinstaller --clean topo2.spec
 dist/topo --version
+dist/topo2 --version
+uv run python scripts/smoke_topo2.py dist/topo2
 ```
 
 Pushing a tag matching `v<package-version>` runs the release matrix for macOS
 x64/arm64, glibc Linux x64/arm64, and Windows x64. Each executable completes the
 contract, workspace-init, and context-status smoke flow before upload. After all
-artifacts are published, the same workflow runs `install.sh` or `install.ps1`
+artifacts (separate `topo` and `topo2` archives per platform) are published, the
+same workflow runs `install.sh` or `install.ps1`
 against the public release. A standalone install can run `topo upgrade` to
 download the latest published release for its platform. The command checks the
 downloaded executable's version before replacing the current binary. On Windows,
 replacement is scheduled for immediately after the CLI exits because Windows
 locks the running executable. Python and `uv` installations use their package
-manager to upgrade instead.
+manager to upgrade instead. From v0.6.0 the installers deliver both commands and
+validate both downloads before replacement. Pinned older releases still install
+only `topo`. The original `topo` archive remains a single binary for compatibility
+with existing self-updaters. `topo upgrade` updates only the historical CLI; rerun
+the installer to install or update `topo2`.
 
 ### Bulk proposal submission and performance reproduction
 

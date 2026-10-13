@@ -28,9 +28,10 @@ build = [
 
 [project.scripts]
 topo = "topo.cli:main"
+topo2 = "topo_v2.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/topo"]
+packages = ["src/topo", "src/topo_v2"]
 
 [tool.hatch.version]
 path = "src/topo/__about__.py"
@@ -41,7 +42,7 @@ testpaths = ["tests", "e2e"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests", "e2e", "scripts/check_architecture.py", "scripts/topo_helpers.py"]
+files = ["src", "tests", "e2e", "scripts/check_architecture.py", "scripts/topo_helpers.py", "scripts/benchmark_topo2.py", "scripts/smoke_topo2.py"]
 mypy_path = "src"
 
 [tool.ruff]
