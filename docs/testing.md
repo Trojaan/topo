@@ -1,5 +1,8 @@
 # Testing and verification
 
+Voor de zelfstandige actuele-toestand-engine `topo2`, zie [Topo 2](topo2.md).
+De bestaande generatie- en voorstelcontracten op deze pagina gelden voor `topo`.
+
 The gate has three layers:
 
 1. `tests/` exercises typed units and in-process integration boundaries.
@@ -118,9 +121,14 @@ When an e2e test fails, classify it as a product defect, an intentionally change
 contract, or an environment problem. Never remove an assertion just to get green.
 For a CLI-visible feature, update the journey and keep evidence synthetic.
 
-CI also builds one Linux standalone executable on every change. A release tag
+CI builds both Linux standalone executables on every change. The Topo 2 smoke
+flow uses only synthetic records and proves init, preview, confirmation, summary
+and show from the frozen executable; its JSON transcript is a CI artifact. Unix
+installer e2e tests exercise both downloads, legacy pinned releases and preservation
+of installed commands when the second download is absent or invalid. A release tag
 expands this to the five supported platform artifacts and smoke-tests each binary;
-only after publication do installer jobs download and execute the released zips.
+only after publication do installer jobs download both released zips and exercise
+the installed commands, including the complete synthetic Topo 2 smoke flow.
 The upgrade command's tests use synthetic release metadata and archives locally;
 they do not contact GitHub or replace a developer's installed CLI.
 

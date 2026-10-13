@@ -1,5 +1,8 @@
 # Topo-capabilities
 
+Voor de zelfstandige actuele-toestand-engine `topo2`, zie [Topo 2](topo2.md).
+De bestaande generatie- en voorstelcontracten op deze pagina gelden voor `topo`.
+
 Dit is de operationele capability-map voor agents en maintainers. Lees deze pagina
 voordat je Topo gebruikt. De actuele machinecontracten blijven opvraagbaar met
 `uv run topo contract describe --json` en `uv run topo contract schema <command>

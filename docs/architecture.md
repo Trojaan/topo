@@ -1,5 +1,8 @@
 # Architecture
 
+Voor de zelfstandige actuele-toestand-engine `topo2`, zie [Topo 2](topo2.md).
+De bestaande generatie- en voorstelcontracten op deze pagina gelden voor `topo`.
+
 Topo 0.1 is one Python package and one command-line process. It has no server,
 database, queue, container, port, or required network service.
 
