@@ -1,0 +1,6 @@
+Bankreferentie;Rekening;Boekdatum;Bedrag;Valuta;Omschrijving
+SYN004;SYN-BETAAL;2026-10-03;-86,50;EUR;Synthetische supermarkt gecorrigeerd
+SYN003;SYN-SPAAR;2026-10-02;400,00;EUR;Eigen overboeking van SYN-BETAAL
+SYN002;SYN-BETAAL;2026-10-02;-400,00;EUR;Eigen overboeking naar SYN-SPAAR
+SYN001;SYN-BETAAL;2026-10-01;3000,00;EUR;Synthetisch salaris
+SYN005;SYN-BETAAL;2026-10-04;-24,00;EUR;Synthetische lunch

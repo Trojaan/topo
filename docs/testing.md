@@ -156,3 +156,18 @@ De bestaande standalone smoke oefent import en zoeken ook vanuit het werkelijk
 gebouwde en geïnstalleerde programma uit op alle releaseplatformen.
 De synthetische benchmark bevat 10.000 transacties en vereist minder dan één
 seconde voor gericht zoeken en een bulkupdate van 1.000 transacties.
+
+
+## Topo 2-invoer vanaf bronnen
+
+De synthetische [plan-0-journey](plans/topo2-context/00-bewijs.md) start bij een
+bankexport, twee fictieve PNG-saldoschermen en een doelbericht. De black-box test
+bewijst gecombineerde invoer, bronbinding, identieke heraanlevering zonder schrijven,
+verrijkingsbehoud en expliciet wissen/vervangen. Een afzonderlijke agentsessie
+registreert de werkelijke visuele bronlezing, vraagbundels en menselijke bevestiging;
+gescripte testbevestigingen tellen daarvoor niet mee.
+
+`uv run python scripts/benchmark_topo2.py` meet ook behoud bij import en brongebonden
+change bij 1.000 rekeningen en 10.000 transacties. De grens blijft één seconde per
+benoemde operatie. `--transactions 100000` geeft een schaalprofiel zonder harde
+nieuwe grens. Beide rapporteren uitvoergrootte en piek-RSS per CLI-proces op macOS/Linux.

@@ -22,7 +22,7 @@ def run(
     )
     assert process.returncode == (0 if success else 1), process.stdout + process.stderr
     result: dict[str, Any] = json.loads(process.stdout)
-    assert result["contract_version"] == "topo2.cli/2"
+    assert result["contract_version"] == "topo2.cli/3"
     return result
 
 

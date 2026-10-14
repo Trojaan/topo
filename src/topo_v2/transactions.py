@@ -8,6 +8,7 @@ from pydantic import TypeAdapter
 
 from topo_v2.models import (
     Transaction,
+    TransactionChanges,
     TransactionQuery,
     TransactionQueryResult,
 )
@@ -50,11 +51,39 @@ def parse_transactions(raw: bytes, format: Literal["json", "csv"]) -> list[Trans
                 raise ValueError(f"CSV row {line} has the wrong number of fields")
             for key in OPTIONAL_COLUMNS & row.keys():
                 if row[key] == "":
-                    row[key] = None
+                    del row[key]
             records.append(Transaction.model_validate(row))
         return records
     except csv.Error as error:
         raise ValueError(f"Invalid CSV: {error}") from error
+
+
+def prepare_import(
+    existing: list[Transaction], records: list[Transaction]
+) -> tuple[TransactionChanges, int]:
+    """Resolve omissions before comparing; explicit null still clears a label."""
+    ids = [record.id for record in records]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Duplicate transaction IDs in import")
+    current = {record.id: record for record in existing}
+    changes = TransactionChanges()
+    skipped = 0
+    for record in records:
+        previous = current.get(record.id)
+        if previous is None:
+            changes.add.append(record)
+            continue
+        effective = Transaction.model_validate(
+            {
+                **previous.model_dump(),
+                **record.model_dump(exclude_unset=True),
+            }
+        )
+        if effective == previous:
+            skipped += 1
+        else:
+            changes.update.append(effective)
+    return changes, skipped
 
 
 def select_transactions(

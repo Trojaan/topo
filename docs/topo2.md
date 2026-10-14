@@ -36,7 +36,7 @@ Schrijf een request of geef het via stdin door:
 
 ```json
 {
-  "contract_version": "topo2.cli/2",
+  "contract_version": "topo2.cli/3",
   "accounts": {
     "add": [
       {
@@ -77,14 +77,31 @@ samen opgeslagen of geheel geweigerd. Er zijn geen opgeslagen voorstellen.
 record eerst op met `show`. `delete` bevat IDs. Een ID mag per sectie slechts één
 keer worden gewijzigd. IDs zijn globaal uniek, stabiel en onafhankelijk van labels.
 Verwijzingen moeten na de hele wijziging geldig zijn: verwijder doelkoppelingen
-of brokerkoppelingen samen met het gekoppelde record. Een inhoudelijk lege wijziging
-wordt geweigerd.
+of brokerkoppelingen samen met het gekoppelde record. Een request zonder bewerkingen
+wordt geweigerd. Identieke effectieve updates leveren `status: unchanged`, een lege
+`changes` en `confirmation_token: null`, zonder schrijfactie of nieuwe bevestiging.
 
 De token bindt het genormaliseerde request, het absolute contextpad en alle actuele
 bestandsbytes. Na een tussentijdse verandering volgt `STALE_CONFIRMATION`; maak dan
 een nieuwe preview en vraag opnieuw goedkeuring. Herhalen van een al toegepaste
 wijziging is geen replay en schrijft niets opnieuw. De token is een lokale
 consistentiecontrole, geen bewijs van menselijke identiteit of toestemming.
+
+Gebruik bij wijzigingen vanaf bronnen herhaaldelijk `--source /pad/naar/bestand`:
+
+```bash
+topo2 change --context /pad/naar/context.json --request /pad/naar/request.json \
+  --source /pad/naar/export.csv --source /pad/naar/saldo.png \
+  --source /pad/naar/doel.txt --source /pad/naar/geconverteerd.json
+```
+
+Geef bij bevestiging dezelfde bronnen op. Hun opgeloste absolute paden en exacte
+ingelezen bytes binden mee aan de token; ook gewijzigde witruimte blokkeert de
+bevestiging. Volgorde en herhaalde vermelding van hetzelfde opgeloste pad maken
+geen verschil. Relatieve paden worden vanaf de werkdirectory opgelost. Een
+ontbrekende of onleesbare bron geeft een opslagfout zonder contextwijziging.
+Bronnen worden niet opgeslagen in de context. Deze binding controleert consistentie,
+niet of een agent de bronnen juist heeft geïnterpreteerd.
 
 ## Records en uitkomsten
 
@@ -114,12 +131,18 @@ consistentiecontrole, geen bewijs van menselijke identiteit of toestemming.
 
 ## Transacties importeren en zoeken
 
-Vanaf v0.7.0 gebruikt Topo 2 `topo2.cli/2` en `topo2.context/2`. Bestanden met
+Het actuele CLI-contract is `topo2.cli/3`; het opslagformaat blijft
+`topo2.context/2`, geïntroduceerd in v0.7.0. Bestanden met
 `topo2.context/1` blijven leesbaar zonder herschrijven. Een preview en een
 identieke herimport veranderen ze evenmin. De eerstvolgende bevestigde wijziging
 slaat de volledige context in versie 2 op en behoudt de bestaande gegevens.
 Oudere Topo 2-programma’s kunnen versie 2 niet lezen; gebruik de actuele installer.
-Nieuwe JSON-aanvragen gebruiken contractversie 2.
+Nieuwe JSON-aanvragen gebruiken contractversie 3 (ook de standaard bij weglaten).
+Expliciete versie-2-change-requests worden met een migratiemelding geweigerd:
+ontdek `topo2 contract` opnieuw en bereid de aanvraag voor versie 3 voor.
+De versiegrens maakt het nieuwe behoud bij import en de no-op-uitvoer expliciet;
+`change.update` blijft volledige records vervangen. Bestaande versie-2-contexten
+hebben geen migratie nodig. Lezen, preview en no-op herschrijven niets.
 
 Een transactie bevat een vaste `id`, `account_id`, `booking_date`, getekend
 `amount`, expliciete `currency` en `description`. `category` en `source` zijn
@@ -136,7 +159,7 @@ correcties vervangen een record en verwijderingen bewaren geen oude versie.
 
 ### Import
 
-JSON bevat een lijst volledige transactierecords. CSV is UTF-8 (een BOM mag)
+JSON bevat een lijst transactierecords met alle verplichte velden. CSV is UTF-8 (een BOM mag)
 met komma als scheidingsteken en dezelfde veldnamen; tekst met komma’s of
 regelovergangen wordt gequote. `category` en `source` mogen ontbreken of leeg
 zijn. De overige kolommen zijn verplicht; dubbele of onbekende kolommen en
@@ -162,9 +185,13 @@ topo2 import-transactions --context /pad/naar/context.json \
   --file /pad/naar/transacties.csv --format csv --confirmation-token TOKEN
 ```
 
-Vaste IDs bepalen herimport: identieke records worden overgeslagen; gewijzigde
-records vervangen het volledige bestaande record. Neem eigen categorieën en
-bronlabels daarom mee wanneer je die wilt behouden. Er is geen automatische
+Vaste IDs bepalen herimport. Verplichte velden vervangen hun eerdere waarden.
+Bij bestaande transacties behouden weggelaten `category` en `source` de opgeslagen
+labels. Een aangeleverd label vervangt het oude; JSON `null` wist expliciet. Een
+lege JSON-string is ongeldig. Bij CSV behouden ook lege optionele cellen bestaande
+labels; gebruik JSON `null` om te wissen. Bij nieuwe transacties worden ontbrekende
+of lege CSV-labels `null`. Effectief identieke records worden overgeslagen, ook
+wanneer bestaande verrijkingen niet opnieuw zijn aangeleverd. Er is geen automatische
 deduplicatie op datum, bedrag of omschrijving. Dubbele IDs binnen hetzelfde
 bestand en ongeldige records weigeren de gehele import. Een volledig identieke
 of lege geldige import retourneert `status: unchanged`, zonder token of schrijfactie.
@@ -211,16 +238,28 @@ Neem de volgende instructies over in de `AGENTS.md` van de financiële werkmap:
 > `topo2 contract`. Lees rekeningen, bezittingen en doelen met `show`. Gebruik
 > `transactions` met filters en paginering voor transacties; lees niet steeds
 > de hele context. Importeer JSON/CSV met `import-transactions` en vaste IDs.
-> Bewaar vrije categorieën bij vervanging als ze moeten blijven staan.
+> Bij import behouden ontbrekende labels en lege CSV-cellen bestaande waarden;
+> JSON null wist expliciet. Bij change.update neem je bestaande optionele velden
+> zelf mee: dat blijft een volledige-recordvervanging.
 > Transacties wijzigen rekeningstanden niet automatisch. Analyses voer je
 > buiten de engine uit op opgevraagde records. Combineer samenhangende
-> wijzigingen in één `change`-request. Toon de oude en nieuwe waarden, EUR als
+> wijzigingen in één `change`-request. Bind oorspronkelijke bronnen en het
+> geconverteerde importbestand met herhaalde --source-opties. Toon de oude en nieuwe waarden, EUR als
 > standaardvaluta en eventuele ontbrekende waarden. Vraag één expliciete menselijke
 > bevestiging voor de volledige preview. Gebruik de token pas na deze bevestiging.
 > Bij annuleren voer je niets uit. Bij een gewijzigde context maak je een nieuwe
 > preview en vraag je opnieuw bevestiging. Bewerk `context.json` nooit rechtstreeks.
 > Brokerrekeningen bevatten alleen geldsaldo; ETF-records bevatten totale
-> positiewaarden. Noem de uitkomst een vermogensoverzicht. Verzin geen waarden,
+> positiewaarden. Begin bij de gebruikersvraag, lees screenshots waar mogelijk en
+> zet exports om naar het vaste importformaat. Gebruik stabiele IDs uit vaste
+> bankreferenties en hergebruik bekende rekeningkoppelingen, categorieën en input.
+> Scheid bronwaarden, voorbereide interpretaties en onbekenden in de preview.
+> Stel maximaal drie korte vraagbundels over wezenlijke onduidelijkheden; vraag
+> geen volledige inventarisatie. Onleesbare of ambigue bronnen worden niet geraden.
+> Identieke heraanlevering levert geen nieuwe bevestiging of schrijfactie op.
+> Bij bijgewerkte exports neem je bekende verrijkingen mee in volledige updates.
+> Benoem ontbrekende schulden of maandinformatie alleen bij de betreffende uitkomst.
+> Noem de uitkomst een vermogensoverzicht. Verzin geen waarden,
 > valutaomrekening of financiële adviezen.
 
 Houd contextbestanden, lockbestanden en requests buiten Git. `topo2 init` maakt
@@ -248,11 +287,29 @@ uv run python scripts/benchmark_topo2.py
 ```
 
 Deze meet afzonderlijke CLI-processen met 1.000 rekeningen en 10.000 transacties.
-Gericht zoeken, een preview en een bevestigde update van 1.000 transacties moeten
-binnen één seconde blijven. Hij leest geen persoonlijke gegevens en verwijdert de tijdelijke context na afloop.
+Lezen, gericht zoeken, import, behoud bij herimport, previews, bevestigde updates
+van 1.000 transacties en brongebonden no-ops moeten binnen één seconde blijven.
+Elke meting bevat uitvoergrootte en piek-RSS van het CLI-proces. De RSS-meting
+gebruikt `resource` op macOS/Linux. Met `--transactions 100000` wordt dezelfde route
+zonder harde tijdgrens als schaalprofiel gemeten. Hij leest geen persoonlijke
+gegevens en verwijdert de tijdelijke context na afloop.
+
+De [invoerjourney](plans/topo2-context/00-bewijs.md) beschrijft daarnaast de
+synthetische bankexport, twee saldoschermen en het doelbericht, met afzonderlijk
+technisch bewijs en de werkelijk uitgevoerde agentsessie.
 
 Een specifieke Tally-adapter, migratie van historische Topo-pakketten,
 cashflowberekeningen, automatische categorisatie, transferherkenning,
 saldo-afleiding, afzonderlijke schulden, projecties en een gebruikersinterface
 vallen buiten deze versie. De agent kan exports omzetten naar het vaste
 importformaat en analyses uitvoeren op opgevraagde transacties.
+
+## Geplande uitbreiding
+
+Het [contextplan](plans/topo2-context/README.md) onderscheidt plan 0 van de
+nog niet geïmplementeerde vervolguitbreidingen. De prioriteit is snel inzicht uit exports, screenshots en weinig
+aanvullende input, met één gezamenlijke preview en bevestiging. Gedeeltelijke
+context blijft bruikbaar; uitgebreide doelverdeling en gezamenlijke tijdlijnen
+zijn uitgesteld tot concrete gebruiksjourneys hun noodzaak aantonen. Behoud van
+verrijkingen bij herimport en bronbinding bij gecombineerde invoer zijn beschikbaar
+volgens het hierboven beschreven contract.

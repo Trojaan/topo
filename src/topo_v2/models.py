@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION: Literal["topo2.cli/2"] = "topo2.cli/2"
+CONTRACT_VERSION: Literal["topo2.cli/3"] = "topo2.cli/3"
 SCHEMA_VERSION: Literal["topo2.context/2"] = "topo2.context/2"
 Identifier = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
@@ -175,12 +175,22 @@ class TransactionChanges(Model):
 
 
 class ChangeRequest(Model):
-    contract_version: Literal["topo2.cli/2"] = CONTRACT_VERSION
+    contract_version: Literal["topo2.cli/3"] = CONTRACT_VERSION
     accounts: AccountChanges = Field(default_factory=AccountChanges)
     assets: AssetChanges = Field(default_factory=AssetChanges)
     goals: GoalChanges = Field(default_factory=GoalChanges)
     transactions: TransactionChanges = Field(default_factory=TransactionChanges)
     confirmation_token: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def current_contract(cls, value: object) -> object:
+        if isinstance(value, dict) and value.get("contract_version") == "topo2.cli/2":
+            raise ValueError(
+                "topo2.cli/2 change requests are unsupported; discover topo2 contract "
+                "and prepare a topo2.cli/3 request. Import now preserves omitted labels."
+            )
+        return value
 
 
 class Difference(Model):
@@ -191,8 +201,8 @@ class Difference(Model):
 
 
 class ChangeResult(Model):
-    status: Literal["preview", "applied"]
-    confirmation_token: str
+    status: Literal["preview", "applied", "unchanged"]
+    confirmation_token: str | None
     changes: list[Difference]
 
 

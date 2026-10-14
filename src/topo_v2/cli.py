@@ -31,9 +31,26 @@ def contract(command: str | None = None) -> dict[str, Any]:
         "change": {
             "input": ChangeRequest.model_json_schema(),
             "output": ChangeResult.model_json_schema(mode="serialization"),
+            "options": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Repeat --source PATH to bind exact source bytes; relative paths use the working directory",
+                    }
+                },
+            },
         },
         "summary": {"output": Summary.model_json_schema(mode="serialization")},
         "import-transactions": {
+            "description": (
+                "Upsert by stable ID. Omitted category/source and empty optional CSV "
+                "cells preserve existing labels; JSON null clears, supplied labels "
+                "replace. Other fields are required. change.update still replaces "
+                "complete records. Identical effective imports do not write."
+            ),
             "input": TRANSACTIONS.json_schema(),
             "options": TransactionImportOptions.model_json_schema(),
             "output": TransactionImportResult.model_json_schema(mode="serialization"),
@@ -82,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
         if name == "change":
             command.add_argument(
                 "--request", type=Path, help="JSON request; otherwise read stdin"
+            )
+            command.add_argument(
+                "--source",
+                type=Path,
+                action="append",
+                default=[],
+                help="Bind this source file to the preview; repeat for multiple sources",
             )
         if name == "import-transactions":
             command.add_argument("--file", type=Path, required=True)
@@ -143,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 else sys.stdin.read()
             )
             result = engine.change(
-                args.context, ChangeRequest.model_validate_json(payload)
+                args.context, ChangeRequest.model_validate_json(payload), args.source
             )
         output = (
             result.model_dump(mode="json") if isinstance(result, BaseModel) else result

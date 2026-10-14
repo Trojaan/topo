@@ -20,11 +20,10 @@ from topo_v2.models import (
     Subtotal,
     Summary,
     Transaction,
-    TransactionChanges,
     TransactionImportOptions,
     TransactionImportResult,
 )
-from topo_v2.transactions import parse_transactions
+from topo_v2.transactions import parse_transactions, prepare_import
 
 
 class ChangeError(ValueError):
@@ -126,7 +125,9 @@ def _differences(before: Context, after: Context) -> list[Difference]:
     return differences
 
 
-def change(path: Path, request: ChangeRequest) -> ChangeResult:
+def change(
+    path: Path, request: ChangeRequest, sources: list[Path] | None = None
+) -> ChangeResult:
     with storage.write_lock(path):
         raw, before = storage.read(path)
         normalized = json.dumps(
@@ -134,12 +135,33 @@ def change(path: Path, request: ChangeRequest) -> ChangeResult:
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
-        token = _token(path, raw, normalized, b"change")
+        # Hash each exact byte snapshot with its resolved path. Canonical ordering
+        # makes repeated --source flags independent of argument order.
+        source_bindings = [
+            (str(source), hashlib.sha256(source.read_bytes()).hexdigest())
+            for source in sorted({source.resolve() for source in sources or []})
+        ]
+        payload = json.dumps(
+            {"request": normalized.decode(), "sources": source_bindings},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        token = _token(path, raw, payload, b"change")
         _check_token(request.confirmation_token, token)
         after = _changed_context(before, request)
         differences = _differences(before, after)
         if not differences:
-            raise ChangeError("Request makes no changes")
+            if not any(
+                section.add or section.update or section.delete
+                for section in (
+                    request.accounts,
+                    request.assets,
+                    request.goals,
+                    request.transactions,
+                )
+            ):
+                raise ChangeError("Request contains no operations")
+            return ChangeResult(status="unchanged", confirmation_token=None, changes=[])
         if request.confirmation_token is not None:
             storage.save(path, after)
         return ChangeResult(
@@ -153,27 +175,17 @@ def import_transactions(
     path: Path, data: bytes, options: TransactionImportOptions
 ) -> TransactionImportResult:
     records = parse_transactions(data, options.format)
-    ids = [record.id for record in records]
-    if len(ids) != len(set(ids)):
-        raise ChangeError("Duplicate transaction IDs in import")
     with storage.write_lock(path):
         raw, before = storage.read(path)
         token = _token(
             path, raw, options.format.encode() + b"\0" + data, b"import-transactions"
         )
         _check_token(options.confirmation_token, token)
-        current = {record.id: record for record in before.transactions}
-        added = [record for record in records if record.id not in current]
-        updated = [
-            record
-            for record in records
-            if record.id in current and record != current[record.id]
-        ]
-        skipped = len(records) - len(added) - len(updated)
-        after = _changed_context(
-            before,
-            ChangeRequest(transactions=TransactionChanges(add=added, update=updated)),
-        )
+        try:
+            changes, skipped = prepare_import(before.transactions, records)
+        except ValueError as error:
+            raise ChangeError(str(error)) from error
+        after = _changed_context(before, ChangeRequest(transactions=changes))
         differences = _differences(before, after)
         if differences and options.confirmation_token is not None:
             storage.save(path, after)
@@ -182,8 +194,8 @@ def import_transactions(
             if differences
             else "unchanged",
             confirmation_token=token if differences else None,
-            added=len(added),
-            updated=len(updated),
+            added=len(changes.add),
+            updated=len(changes.update),
             skipped=skipped,
             total_changes=len(differences),
             truncated=not options.details and len(differences) > 20,

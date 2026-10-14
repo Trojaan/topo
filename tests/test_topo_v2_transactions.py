@@ -414,3 +414,90 @@ def test_schema_one_cannot_hide_transactions() -> None:
                 "transactions": [transaction().model_dump(mode="json")],
             }
         )
+
+
+@pytest.mark.parametrize("field", ["category", "source"])
+@pytest.mark.parametrize("format", ["json", "csv"])
+@pytest.mark.parametrize("supplied", ["omitted", "empty", "replacement", "null"])
+def test_import_optional_field_intent(
+    tmp_path: Path, field: str, format: str, supplied: str
+) -> None:
+    import csv
+    import io
+
+    if format == "csv" and supplied == "null":
+        pytest.skip("CSV clearing is deliberately expressed using JSON null")
+    path = context_file(tmp_path)
+    previous = transaction(category="Known category", source="Known source")
+    apply(path, {"transactions": {"add": [previous.model_dump(mode="json")]}})
+    rows = []
+    for identifier in ("tx", "new"):
+        row = transaction(identifier).model_dump(mode="json", exclude_unset=True)
+        if supplied != "omitted":
+            row[field] = (
+                "Replacement"
+                if supplied == "replacement"
+                else None
+                if supplied == "null"
+                else ""
+            )
+        rows.append(row)
+    if format == "json":
+        if supplied == "empty":
+            with pytest.raises(ValidationError):
+                parse_transactions(json.dumps(rows).encode(), "json")
+            return
+        payload = json.dumps(rows).encode()
+    else:
+        stream = io.StringIO(newline="")
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+        payload = stream.getvalue().encode()
+    options = TransactionImportOptions.model_validate({"format": format})
+    preview = engine.import_transactions(path, payload, options)
+    options.confirmation_token = preview.confirmation_token
+    engine.import_transactions(path, payload, options)
+    records = {record.id: record for record in storage.read(path)[1].transactions}
+    expected = (
+        "Replacement"
+        if supplied == "replacement"
+        else None
+        if supplied == "null"
+        else getattr(previous, field)
+    )
+    assert getattr(records["tx"], field) == expected
+    assert getattr(records["new"], field) == (
+        "Replacement" if supplied == "replacement" else None
+    )
+    other = "source" if field == "category" else "category"
+    assert getattr(records["tx"], other) == getattr(previous, other)
+    raw = path.read_bytes()
+    repeated = engine.import_transactions(
+        path, payload, options.model_copy(update={"confirmation_token": None})
+    )
+    assert repeated.status == "unchanged" and repeated.confirmation_token is None
+    assert path.read_bytes() == raw
+
+
+def test_full_change_update_still_replaces_optional_fields(tmp_path: Path) -> None:
+    path = context_file(tmp_path)
+    apply(
+        path,
+        {
+            "transactions": {
+                "add": [
+                    transaction(category="Old", source="Old").model_dump(mode="json")
+                ]
+            }
+        },
+    )
+    apply(
+        path,
+        {
+            "transactions": {
+                "update": [transaction().model_dump(mode="json", exclude_unset=True)]
+            }
+        },
+    )
+    assert storage.read(path)[1].transactions == [transaction()]

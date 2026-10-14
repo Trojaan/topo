@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -14,10 +16,17 @@ from typing import Any
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--transactions", type=int, choices=(10_000, 100_000), default=10_000
+    )
+    args = parser.parse_args()
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     with TemporaryDirectory(prefix="topo2-benchmark-") as directory:
         path = Path(directory) / "context.json"
+
+        measurements: list[dict[str, Any]] = []
 
         def run(
             command: str, request: dict[str, Any] | None = None, *arguments: str
@@ -26,8 +35,11 @@ def main() -> int:
             process = subprocess.run(
                 [
                     sys.executable,
-                    "-m",
-                    "topo_v2",
+                    "-c",
+                    (
+                        "import resource, sys; from topo_v2.cli import main; "
+                        "code = main(); print('__TOPO_RSS__' + str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss), file=sys.stderr); sys.exit(code)"
+                    ),
                     command,
                     "--context",
                     str(path),
@@ -40,6 +52,17 @@ def main() -> int:
                 env=environment,
             )
             elapsed = perf_counter() - started
+            rss = float(process.stderr.split("__TOPO_RSS__")[-1].strip())
+            measurements.append(
+                {
+                    "command": command,
+                    "seconds": elapsed,
+                    "stdout_bytes": len(process.stdout.encode()),
+                    "peak_rss_bytes": int(
+                        rss if sys.platform == "darwin" else rss * 1024
+                    ),
+                }
+            )
             return json.loads(process.stdout)["result"], elapsed
 
         run("init")
@@ -77,20 +100,20 @@ def main() -> int:
                 "description": f"Synthetic transaction {i}",
                 "category": "Free category",
             }
-            for i in range(10_000)
+            for i in range(args.transactions)
         ]
         source = Path(directory) / "transactions.json"
         source.write_text(json.dumps(transactions), encoding="utf-8")
         import_args = ("--file", str(source), "--format", "json")
-        preview, _ = run("import-transactions", None, *import_args)
-        imported, _ = run(
+        preview, initial_import_preview = run("import-transactions", None, *import_args)
+        imported, initial_import_update = run(
             "import-transactions",
             None,
             *import_args,
             "--confirmation-token",
             preview["confirmation_token"],
         )
-        assert imported["added"] == 10_000
+        assert imported["added"] == args.transactions
         selected, search_time = run(
             "transactions",
             None,
@@ -103,7 +126,7 @@ def main() -> int:
             "--search",
             "SYNTHETIC",
         )
-        assert selected["total"] == 10
+        assert selected["total"] == args.transactions // 1000
         request = {
             "transactions": {
                 "update": [
@@ -119,27 +142,88 @@ def main() -> int:
             "transactions", None, "--account", "bank_0", "--max-amount", "-123.46"
         )
         assert selected["total"] == 1
+        # Re-measure reads with the full transaction fixture present.
+        _, show = run("show")
+        _, summary = run("summary")
+        updated = [{**record, "balance": "1235.57"} for record in records]
+        request = {"accounts": {"update": updated}}
+        preview, preview_time = run("change", request)
+        request["confirmation_token"] = preview["confirmation_token"]
+        _, change_time = run("change", request)
+        # Omitted labels must survive a changed import, then a repeated import.
+        preserved = [
+            {key: value for key, value in record.items() if key != "category"}
+            for record in transactions[:1000]
+        ]
+        for record in preserved:
+            record["amount"] = "-123.47"
+        source.write_text(json.dumps(preserved), encoding="utf-8")
+        preview, import_preview = run("import-transactions", None, *import_args)
+        assert preview["updated"] == 1000
+        assert all(
+            item["after"]["category"] == "Free category" for item in preview["changes"]
+        )
+        _, import_update = run(
+            "import-transactions",
+            None,
+            *import_args,
+            "--confirmation-token",
+            preview["confirmation_token"],
+        )
+        unchanged, import_unchanged = run("import-transactions", None, *import_args)
+        assert unchanged["status"] == "unchanged"
+        request = {
+            "transactions": {
+                "update": [
+                    {**record, "amount": "-123.48"} for record in transactions[:1000]
+                ]
+            }
+        }
+        preview, source_preview = run("change", request, "--source", str(source))
+        request["confirmation_token"] = preview["confirmation_token"]
+        _, source_update = run("change", request, "--source", str(source))
+        del request["confirmation_token"]
+        unchanged, source_unchanged = run("change", request, "--source", str(source))
+        assert unchanged["status"] == "unchanged"
         timings = {
             "show": show,
             "summary": summary,
             "preview": preview_time,
             "confirmed_bulk_update": change_time,
-            "transaction_search_10000": search_time,
+            f"transaction_search_{args.transactions}": search_time,
+            "initial_import_preview": initial_import_preview,
+            "initial_import_update": initial_import_update,
             "transaction_preview_1000": transaction_preview,
             "transaction_update_1000": transaction_update,
+            "preserving_import_preview_1000": import_preview,
+            "preserving_import_update_1000": import_update,
+            "preserving_import_unchanged_1000": import_unchanged,
+            "source_bound_preview_1000": source_preview,
+            "source_bound_update_1000": source_update,
+            "source_bound_unchanged_1000": source_unchanged,
         }
         print(
             json.dumps(
                 {
                     "accounts": 1000,
-                    "transactions": 10000,
+                    "transactions": args.transactions,
+                    "environment": {
+                        "platform": platform.platform(),
+                        "python": platform.python_version(),
+                    },
+                    "measurements": measurements,
                     "seconds": timings,
-                    "limit_seconds": 1.0,
+                    "limit_seconds": 1.0 if args.transactions == 10_000 else None,
                 },
                 indent=2,
             )
         )
-        return 0 if all(value < 1.0 for value in timings.values()) else 1
+        return (
+            0
+            if args.transactions == 100_000
+            or all(value < 1.0 for value in timings.values())
+            else 1
+        )
 
 
 if __name__ == "__main__":
