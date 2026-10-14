@@ -294,3 +294,61 @@ def test_failed_flush_preserves_context(tmp_path: Path) -> None:
         storage.save(path, context)
     assert path.read_bytes() == raw
     assert list(tmp_path.glob(".context.json.*")) == []
+
+
+def test_identical_update_is_unchanged_but_empty_request_is_invalid(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "context.json"
+    engine.initialize(path)
+    record = account().model_dump(mode="json")
+    apply(path, ChangeRequest.model_validate({"accounts": {"add": [record]}}))
+    raw = path.read_bytes()
+    request = ChangeRequest.model_validate({"accounts": {"update": [record]}})
+    result = engine.change(path, request)
+    assert result.status == "unchanged" and result.confirmation_token is None
+    assert result.changes == [] and path.read_bytes() == raw
+    request.confirmation_token = "stale"
+    with pytest.raises(engine.StaleConfirmation):
+        engine.change(path, request)
+    with pytest.raises(engine.ChangeError, match="no operations"):
+        engine.change(path, ChangeRequest())
+    assert path.read_bytes() == raw
+
+
+def test_source_binding_exact_bytes_path_and_membership(tmp_path: Path) -> None:
+    path = tmp_path / "context.json"
+    engine.initialize(path)
+    sources = [tmp_path / "export.csv", tmp_path / "goal.txt"]
+    for source in sources:
+        source.write_bytes(b"synthetic")
+    request = ChangeRequest.model_validate(
+        {"accounts": {"add": [account().model_dump(mode="json")]}}
+    )
+    token = engine.change(path, request, sources).confirmation_token
+    assert (
+        engine.change(path, request, list(reversed(sources))).confirmation_token
+        == token
+    )
+    request.confirmation_token = token
+    raw = path.read_bytes()
+    for altered in (sources[:1], []):
+        with pytest.raises(engine.StaleConfirmation):
+            engine.change(path, request, altered)
+    sources[0].write_bytes(b"synthetic\n")
+    with pytest.raises(engine.StaleConfirmation):
+        engine.change(path, request, sources)
+    sources[0].write_bytes(b"synthetic")
+    other = tmp_path / "same-content.csv"
+    other.write_bytes(b"synthetic")
+    with pytest.raises(engine.StaleConfirmation):
+        engine.change(path, request, [other, sources[1]])
+    sources[0].unlink()
+    with pytest.raises(OSError):
+        engine.change(path, request, sources)
+    assert path.read_bytes() == raw
+
+
+def test_version_two_requests_require_explicit_migration() -> None:
+    with pytest.raises(ValidationError, match="discover topo2 contract"):
+        ChangeRequest.model_validate({"contract_version": "topo2.cli/2"})

@@ -6,7 +6,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION: Literal["topo2.cli/2"] = "topo2.cli/2"
+CONTRACT_VERSION: Literal["topo2.cli/3"] = "topo2.cli/3"
+# Base contexts stay compatible; optional records opt into newer storage versions.
 SCHEMA_VERSION: Literal["topo2.context/2"] = "topo2.context/2"
 Identifier = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
@@ -55,7 +56,12 @@ class ValuedRecord(Model):
     as_of: date | None = None
 
 
-class Account(ValuedRecord):
+class AvailableRecord(ValuedRecord):
+    availability: Literal["free", "restricted", "unknown"] | None = None
+    availability_note: Label | None = None
+
+
+class Account(AvailableRecord):
     type: Literal["payment", "savings", "investment"]
     balance: Money | None = None
 
@@ -66,7 +72,7 @@ class Account(ValuedRecord):
         return self
 
 
-class Asset(ValuedRecord):
+class Asset(AvailableRecord):
     type: Literal["etf", "property", "vehicle", "cash", "investment", "other"]
     value: Annotated[Money, Field(ge=0)] | None = None
     broker_account_id: Identifier | None = None
@@ -75,6 +81,22 @@ class Asset(ValuedRecord):
     def dated_value(self) -> Self:
         if self.value is not None and self.as_of is None:
             raise ValueError("A value requires as_of")
+        return self
+
+
+class Debt(ValuedRecord):
+    type: Literal["mortgage", "loan", "credit_card", "overdraft", "other"]
+    amount: Annotated[Money, Field(ge=0)] | None = None
+    interest_rate: Annotated[Money, Field(ge=0)] | None = None
+    end_date: date | None = None
+    account_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def dated_amount(self) -> Self:
+        if self.amount is not None and self.as_of is None:
+            raise ValueError("A debt amount requires as_of")
+        if self.account_id is not None and self.type != "overdraft":
+            raise ValueError("Only overdraft debts can link an account")
         return self
 
 
@@ -99,24 +121,70 @@ class Transaction(Model):
     source: Label | None = None
 
 
-Record = Account | Asset | Goal | Transaction
+Domain = Literal["accounts", "assets", "debts", "goals", "cashflows"]
+
+
+class Inventory(Model):
+    id: Domain
+    status: Literal["unknown", "partial", "complete"]
+    checked_on: date
+
+
+class TransactionCoverage(Model):
+    id: Identifier
+    account_id: Identifier
+    from_date: date
+    to_date: date
+    checked_on: date
+
+    @model_validator(mode="after")
+    def ordered_interval(self) -> Self:
+        if self.from_date > self.to_date:
+            raise ValueError("from_date must not follow to_date")
+        return self
+
+
+Record = Account | Asset | Debt | Goal | Transaction | Inventory | TransactionCoverage
 
 
 class Context(Model):
-    schema_version: Literal["topo2.context/1", "topo2.context/2"] = SCHEMA_VERSION
+    schema_version: Literal[
+        "topo2.context/1", "topo2.context/2", "topo2.context/3", "topo2.context/4"
+    ] = SCHEMA_VERSION
     context_id: str
     accounts: list[Account] = Field(default_factory=list)
     assets: list[Asset] = Field(default_factory=list)
+    debts: list[Debt] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
     transactions: list[Transaction] = Field(default_factory=list)
 
+    inventories: list[Inventory] = Field(default_factory=list)
+    transaction_coverage: list[TransactionCoverage] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def references(self) -> Self:
+        if self.schema_version not in ("topo2.context/3", "topo2.context/4") and (
+            self.inventories or self.transaction_coverage
+        ):
+            raise ValueError("Context declarations require topo2.context/3")
+        if self.schema_version != "topo2.context/4" and (
+            self.debts
+            or any(
+                record.availability is not None or record.availability_note is not None
+                for record in [*self.accounts, *self.assets]
+            )
+        ):
+            raise ValueError("Debts and availability require topo2.context/4")
+        domains = [record.id for record in self.inventories]
+        if len(domains) != len(set(domains)):
+            raise ValueError("Inventory domains must be unique")
         all_ids = (
             [account.id for account in self.accounts]
             + [asset.id for asset in self.assets]
+            + [debt.id for debt in self.debts]
             + [goal.id for goal in self.goals]
             + [transaction.id for transaction in self.transactions]
+            + [coverage.id for coverage in self.transaction_coverage]
         )
         if len(all_ids) != len(set(all_ids)):
             raise ValueError("Record IDs must be unique across the context")
@@ -124,6 +192,11 @@ class Context(Model):
         assets = {asset.id: asset for asset in self.assets}
         if self.schema_version == "topo2.context/1" and self.transactions:
             raise ValueError("Transactions require topo2.context/2")
+        for coverage in self.transaction_coverage:
+            if coverage.account_id not in accounts:
+                raise ValueError(
+                    f"Coverage {coverage.id}: unknown account {coverage.account_id}"
+                )
         for transaction in self.transactions:
             if transaction.account_id not in accounts:
                 raise ValueError(
@@ -136,6 +209,24 @@ class Context(Model):
                     raise ValueError(
                         f"Asset {asset.id}: broker must be an investment account"
                     )
+        linked_accounts: set[str] = set()
+        for debt in self.debts:
+            if debt.account_id is None:
+                continue
+            account = accounts.get(debt.account_id)
+            if debt.account_id in linked_accounts:
+                raise ValueError("An account can have only one linked overdraft")
+            linked_accounts.add(debt.account_id)
+            if (
+                account is None
+                or account.balance is None
+                or debt.amount is None
+                or account.balance > 0
+                or debt.amount != account.balance.copy_negate()
+                or debt.currency != account.currency
+                or debt.as_of != account.as_of
+            ):
+                raise ValueError(f"Debt {debt.id}: inconsistent overdraft account")
         for goal in self.goals:
             for refs, records in (
                 (goal.account_ids, accounts),
@@ -162,6 +253,12 @@ class AssetChanges(Model):
     delete: list[Identifier] = Field(default_factory=list)
 
 
+class DebtChanges(Model):
+    add: list[Debt] = Field(default_factory=list)
+    update: list[Debt] = Field(default_factory=list)
+    delete: list[Identifier] = Field(default_factory=list)
+
+
 class GoalChanges(Model):
     add: list[Goal] = Field(default_factory=list)
     update: list[Goal] = Field(default_factory=list)
@@ -174,25 +271,58 @@ class TransactionChanges(Model):
     delete: list[Identifier] = Field(default_factory=list)
 
 
+class InventoryChanges(Model):
+    add: list[Inventory] = Field(default_factory=list)
+    update: list[Inventory] = Field(default_factory=list)
+    delete: list[Domain] = Field(default_factory=list)
+
+
+class CoverageChanges(Model):
+    add: list[TransactionCoverage] = Field(default_factory=list)
+    update: list[TransactionCoverage] = Field(default_factory=list)
+    delete: list[Identifier] = Field(default_factory=list)
+
+
 class ChangeRequest(Model):
-    contract_version: Literal["topo2.cli/2"] = CONTRACT_VERSION
+    contract_version: Literal["topo2.cli/3"] = CONTRACT_VERSION
     accounts: AccountChanges = Field(default_factory=AccountChanges)
     assets: AssetChanges = Field(default_factory=AssetChanges)
+    debts: DebtChanges = Field(default_factory=DebtChanges)
     goals: GoalChanges = Field(default_factory=GoalChanges)
     transactions: TransactionChanges = Field(default_factory=TransactionChanges)
+    inventories: InventoryChanges = Field(default_factory=InventoryChanges)
+    transaction_coverage: CoverageChanges = Field(default_factory=CoverageChanges)
     confirmation_token: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def current_contract(cls, value: object) -> object:
+        if isinstance(value, dict) and value.get("contract_version") == "topo2.cli/2":
+            raise ValueError(
+                "topo2.cli/2 change requests are unsupported; discover topo2 contract "
+                "and prepare a topo2.cli/3 request. Import now preserves omitted labels."
+            )
+        return value
 
 
 class Difference(Model):
-    section: Literal["accounts", "assets", "goals", "transactions"]
+    section: Literal[
+        "accounts",
+        "assets",
+        "debts",
+        "goals",
+        "transactions",
+        "inventories",
+        "transaction_coverage",
+    ]
     id: str
     before: Record | None
     after: Record | None
 
 
 class ChangeResult(Model):
-    status: Literal["preview", "applied"]
-    confirmation_token: str
+    status: Literal["preview", "applied", "unchanged"]
+    confirmation_token: str | None
     changes: list[Difference]
 
 
@@ -215,10 +345,38 @@ class GoalProgress(Model):
     target_date: date | None
 
 
+class InventoryState(Model):
+    id: Domain
+    status: Literal["unknown", "partial", "complete"]
+    checked_on: date | None
+
+
+class NetWealthSubtotal(Subtotal):
+    known_account_asset_total: Decimal
+    known_debt_total: Decimal
+    linked_debt_ids: list[str]
+    inventory_complete: bool
+
+
+class NetWealth(Model):
+    subtotals: list[NetWealthSubtotal]
+    inventories: list[InventoryState]
+
+
+class AvailabilitySubtotal(Model):
+    currency: str
+    known_free_total: Decimal
+    known_restricted_total: Decimal
+    unknown_availability_ids: list[str]
+    missing_ids: list[str]
+
+
 class Summary(Model):
     kind: Literal["wealth_overview"] = "wealth_overview"
     subtotals: list[Subtotal]
     goals: list[GoalProgress]
+    net_wealth: NetWealth
+    availability: list[AvailabilitySubtotal]
 
 
 class TransactionImportOptions(Model):
@@ -272,3 +430,64 @@ class TransactionQueryResult(Model):
     total: int
     offset: int
     limit: int
+
+
+class ContextQuery(Model):
+    reference_date: date | None = None
+    max_age_days: Annotated[int, Field(ge=0)] | None = None
+
+    @model_validator(mode="after")
+    def explicit_age_policy(self) -> Self:
+        if (self.reference_date is None) != (self.max_age_days is None):
+            raise ValueError(
+                "reference_date and max_age_days must be supplied together"
+            )
+        return self
+
+
+class ValueAge(Model):
+    id: str
+    age_days: int | None
+    stale: bool | None
+
+
+class CoverageState(Model):
+    account_id: str
+    status: Literal["unknown", "declared"]
+    intervals: list[TransactionCoverage]
+
+
+class Limitation(Model):
+    outcome: Literal[
+        "wealth_overview",
+        "net_wealth",
+        "goal_progress",
+        "transaction_analysis",
+        "monthly_room",
+        "availability",
+    ]
+    code: Literal[
+        "inventory_unknown",
+        "inventory_partial",
+        "missing_values",
+        "stale_values",
+        "coverage_unknown",
+        "coverage_limited",
+        "not_supported",
+        "availability_unknown",
+    ]
+    ids: list[str]
+
+
+class CompactContext(Model):
+    context_id: str
+    accounts: list[Account]
+    assets: list[Asset]
+    debts: list[Debt]
+    goals: list[Goal]
+    summary: Summary
+    inventories: list[InventoryState]
+    transaction_coverage: list[CoverageState]
+    age_policy: ContextQuery
+    value_age: list[ValueAge]
+    limitations: list[Limitation]

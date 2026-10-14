@@ -156,3 +156,39 @@ De bestaande standalone smoke oefent import en zoeken ook vanuit het werkelijk
 gebouwde en geïnstalleerde programma uit op alle releaseplatformen.
 De synthetische benchmark bevat 10.000 transacties en vereist minder dan één
 seconde voor gericht zoeken en een bulkupdate van 1.000 transacties.
+
+
+## Topo 2-invoer vanaf bronnen
+
+De synthetische [plan-0-journey](plans/topo2-context/00-bewijs.md) start bij een
+bankexport, twee fictieve PNG-saldoschermen en een doelbericht. De black-box test
+bewijst gecombineerde invoer, bronbinding, identieke heraanlevering zonder schrijven,
+verrijkingsbehoud en expliciet wissen/vervangen. Een afzonderlijke agentsessie
+registreert de werkelijke visuele bronlezing, vraagbundels en menselijke bevestiging;
+gescripte testbevestigingen tellen daarvoor niet mee.
+
+`uv run python scripts/benchmark_topo2.py` meet ook behoud bij import en brongebonden
+change bij 1.000 rekeningen en 10.000 transacties. De grens blijft één seconde per
+benoemde operatie. `--transactions 100000` geeft een schaalprofiel zonder harde
+nieuwe grens. Beide rapporteren uitvoergrootte en piek-RSS per CLI-proces op macOS/Linux.
+
+De plan-1-journey `e2e/test_topo_v2_context_journey.py` bewijst compact lezen van
+oude en gedeeltelijke context, gerichte onzekerheid, optionele verklaringen in één
+preview, intervalgrenzen en behoud bij import. `tests/test_topo_v2_reading.py`
+controleert gekoppelde doelonzekerheid, lege complete inventaris en tokenbinding.
+De Topo 2-benchmark meet ook `context` met expliciet ouderdomsbeleid en bewaakt
+dat de uitvoergrootte gelijk blijft na toevoegen van transacties. Zie
+[het bewijs van plan 1](plans/topo2-context/01-bewijs.md) voor metingen en de open
+menselijke gebruikspoort.
+
+
+De plan-2-journey `e2e/test_topo_v2_wealth_journey.py` bewijst afzonderlijke valuta,
+expliciet eenmaal getelde roodstand, onbekende schuldstanden, optionele
+beschikbaarheid, atomaire verwijzingen, gezamenlijke correcties, bronbinding en
+behoud bij herimport. Unit-tests dekken bekende nul, schuld-only context,
+waardebeschikbaarheid versus inventarisstatus en versie-4-validatie. Oude contexten
+blijven bij lezen, preview en identieke invoer byte- en mtime-identiek.
+De benchmark bevat nu synthetische schulden en beschikbaarheid en bewaakt dat zowel
+summary als context compact blijven bij groei van transacties. Zie
+[plan-2-bewijs](plans/topo2-context/02-bewijs.md); gescripte tokens bewijzen geen
+menselijke gebruiksbevestiging.

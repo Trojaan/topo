@@ -1,0 +1,10 @@
+Uitsluitend synthetische oefengegevens, peildatum 2026-10-04.
+Vraag: geef mijn bekende nettovermogen, met onzekerheden en valuta afzonderlijk.
+Woning: EUR 300.000; hypotheek: EUR 200.000, jaarlijkse rente 3,5%, einddatum 2050-10-04.
+Extra spaarrekening: EUR 10.000. Extra betaalrekening: EUR -500.
+Roodstand EUR 500 beschrijft expliciet dezelfde extra betaalrekening, geen tweede schuld.
+Dollarrekening: USD 1.000; lening: USD 100.
+Daarnaast is er een persoonlijke lening waarvan de stand onbekend is, in EUR.
+Dit is een gedeeltelijke inventaris; er is geen verklaring dat alle posten bekend zijn.
+Er is geen beschikbaarheid verklaard. De bankexport en saldoschermen uit topo2-input
+blijven van toepassing op de oorspronkelijke twee rekeningen; dit zijn extra posten.
