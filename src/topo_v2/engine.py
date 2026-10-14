@@ -19,7 +19,12 @@ from topo_v2.models import (
     GoalProgress,
     Subtotal,
     Summary,
+    Transaction,
+    TransactionChanges,
+    TransactionImportOptions,
+    TransactionImportResult,
 )
+from topo_v2.transactions import parse_transactions
 
 
 class ChangeError(ValueError):
@@ -39,7 +44,7 @@ def initialize(path: Path) -> Context:
         return context
 
 
-def _apply[T: (Account, Asset, Goal)](
+def _apply[T: (Account, Asset, Goal, Transaction)](
     records: list[T], add: list[T], update: list[T], delete: list[str]
 ) -> list[T]:
     touched = [record.id for record in [*add, *update]] + delete
@@ -61,6 +66,66 @@ def _apply[T: (Account, Asset, Goal)](
     return list(current.values())
 
 
+def _token(path: Path, raw: bytes, payload: bytes, purpose: bytes) -> str:
+    return hashlib.sha256(
+        purpose + b"\0" + str(path.resolve()).encode() + b"\0" + raw + b"\0" + payload
+    ).hexdigest()
+
+
+def _check_token(provided: str | None, expected: str) -> None:
+    if provided is not None and not hmac.compare_digest(
+        provided.encode(), expected.encode()
+    ):
+        raise StaleConfirmation(
+            "Request or context changed; obtain and approve a new preview"
+        )
+
+
+def _changed_context(before: Context, request: ChangeRequest) -> Context:
+    return Context(
+        context_id=before.context_id,
+        accounts=_apply(
+            before.accounts,
+            request.accounts.add,
+            request.accounts.update,
+            request.accounts.delete,
+        ),
+        assets=_apply(
+            before.assets,
+            request.assets.add,
+            request.assets.update,
+            request.assets.delete,
+        ),
+        goals=_apply(
+            before.goals, request.goals.add, request.goals.update, request.goals.delete
+        ),
+        transactions=_apply(
+            before.transactions,
+            request.transactions.add,
+            request.transactions.update,
+            request.transactions.delete,
+        ),
+    )
+
+
+def _differences(before: Context, after: Context) -> list[Difference]:
+    differences: list[Difference] = []
+    for section in ("accounts", "assets", "goals", "transactions"):
+        old = {record.id: record for record in getattr(before, section)}
+        new = {record.id: record for record in getattr(after, section)}
+        for identifier in sorted(old.keys() | new.keys()):
+            if old.get(identifier) != new.get(identifier):
+                differences.append(
+                    Difference(
+                        section=section,
+                        id=identifier,
+                        before=old.get(identifier),
+                        after=new.get(identifier),
+                    )
+                )
+    return differences
+
+
 def change(path: Path, request: ChangeRequest) -> ChangeResult:
     with storage.write_lock(path):
         raw, before = storage.read(path)
@@ -69,50 +134,10 @@ def change(path: Path, request: ChangeRequest) -> ChangeResult:
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
-        token = hashlib.sha256(
-            str(path.resolve()).encode() + b"\0" + raw + b"\0" + normalized
-        ).hexdigest()
-        if request.confirmation_token is not None and not hmac.compare_digest(
-            request.confirmation_token, token
-        ):
-            raise StaleConfirmation(
-                "Request or context changed; obtain and approve a new preview"
-            )
-        after = Context(
-            context_id=before.context_id,
-            accounts=_apply(
-                before.accounts,
-                request.accounts.add,
-                request.accounts.update,
-                request.accounts.delete,
-            ),
-            assets=_apply(
-                before.assets,
-                request.assets.add,
-                request.assets.update,
-                request.assets.delete,
-            ),
-            goals=_apply(
-                before.goals,
-                request.goals.add,
-                request.goals.update,
-                request.goals.delete,
-            ),
-        )
-        differences: list[Difference] = []
-        for section in ("accounts", "assets", "goals"):
-            old = {record.id: record for record in getattr(before, section)}
-            new = {record.id: record for record in getattr(after, section)}
-            for identifier in sorted(old.keys() | new.keys()):
-                if old.get(identifier) != new.get(identifier):
-                    differences.append(
-                        Difference(
-                            section=section,
-                            id=identifier,
-                            before=old.get(identifier),
-                            after=new.get(identifier),
-                        )
-                    )
+        token = _token(path, raw, normalized, b"change")
+        _check_token(request.confirmation_token, token)
+        after = _changed_context(before, request)
+        differences = _differences(before, after)
         if not differences:
             raise ChangeError("Request makes no changes")
         if request.confirmation_token is not None:
@@ -121,6 +146,48 @@ def change(path: Path, request: ChangeRequest) -> ChangeResult:
             status="applied" if request.confirmation_token is not None else "preview",
             confirmation_token=token,
             changes=differences,
+        )
+
+
+def import_transactions(
+    path: Path, data: bytes, options: TransactionImportOptions
+) -> TransactionImportResult:
+    records = parse_transactions(data, options.format)
+    ids = [record.id for record in records]
+    if len(ids) != len(set(ids)):
+        raise ChangeError("Duplicate transaction IDs in import")
+    with storage.write_lock(path):
+        raw, before = storage.read(path)
+        token = _token(
+            path, raw, options.format.encode() + b"\0" + data, b"import-transactions"
+        )
+        _check_token(options.confirmation_token, token)
+        current = {record.id: record for record in before.transactions}
+        added = [record for record in records if record.id not in current]
+        updated = [
+            record
+            for record in records
+            if record.id in current and record != current[record.id]
+        ]
+        skipped = len(records) - len(added) - len(updated)
+        after = _changed_context(
+            before,
+            ChangeRequest(transactions=TransactionChanges(add=added, update=updated)),
+        )
+        differences = _differences(before, after)
+        if differences and options.confirmation_token is not None:
+            storage.save(path, after)
+        return TransactionImportResult(
+            status=("applied" if options.confirmation_token is not None else "preview")
+            if differences
+            else "unchanged",
+            confirmation_token=token if differences else None,
+            added=len(added),
+            updated=len(updated),
+            skipped=skipped,
+            total_changes=len(differences),
+            truncated=not options.details and len(differences) > 20,
+            changes=differences if options.details else differences[:20],
         )
 
 

@@ -16,7 +16,12 @@ from topo_v2.models import (
     ChangeResult,
     Context,
     Summary,
+    TransactionImportOptions,
+    TransactionImportResult,
+    TransactionQuery,
+    TransactionQueryResult,
 )
+from topo_v2.transactions import TRANSACTIONS, select_transactions
 
 
 def contract(command: str | None = None) -> dict[str, Any]:
@@ -28,6 +33,15 @@ def contract(command: str | None = None) -> dict[str, Any]:
             "output": ChangeResult.model_json_schema(mode="serialization"),
         },
         "summary": {"output": Summary.model_json_schema(mode="serialization")},
+        "import-transactions": {
+            "input": TRANSACTIONS.json_schema(),
+            "options": TransactionImportOptions.model_json_schema(),
+            "output": TransactionImportResult.model_json_schema(mode="serialization"),
+        },
+        "transactions": {
+            "input": TransactionQuery.model_json_schema(),
+            "output": TransactionQueryResult.model_json_schema(mode="serialization"),
+        },
         "contract": {"description": "Discover command result and change input schemas"},
     }
     if command is not None:
@@ -36,12 +50,23 @@ def contract(command: str | None = None) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Topo 2: current wealth and goals")
+    parser = argparse.ArgumentParser(
+        description="Topo 2: financial context, transactions and goals"
+    )
     parser.add_argument(
         "--version", action="version", version=f"topo2 {version('topo-context-engine')}"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "show", "change", "summary", "contract"):
+    command_names = (
+        "init",
+        "show",
+        "change",
+        "summary",
+        "contract",
+        "import-transactions",
+        "transactions",
+    )
+    for name in command_names:
         command = commands.add_parser(name)
         command.add_argument(
             "--json", action="store_true", help="Machine-readable output (default)"
@@ -50,13 +75,37 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument(
                 "schema",
                 nargs="?",
-                choices=["init", "show", "change", "summary", "contract"],
+                choices=command_names,
             )
         else:
             command.add_argument("--context", type=Path, default=Path("context.json"))
         if name == "change":
             command.add_argument(
                 "--request", type=Path, help="JSON request; otherwise read stdin"
+            )
+        if name == "import-transactions":
+            command.add_argument("--file", type=Path, required=True)
+            command.add_argument("--format", choices=["json", "csv"], required=True)
+            command.add_argument("--confirmation-token")
+            command.add_argument("--details", action="store_true")
+        if name == "transactions":
+            command.add_argument("--account", dest="account_id")
+            command.add_argument("--from-date")
+            command.add_argument("--to-date")
+            command.add_argument("--currency")
+            command.add_argument("--category")
+            command.add_argument("--min-amount")
+            command.add_argument("--max-amount")
+            command.add_argument("--search")
+            command.add_argument(
+                "--offset",
+                type=int,
+                default=TransactionQuery.model_fields["offset"].default,
+            )
+            command.add_argument(
+                "--limit",
+                type=int,
+                default=TransactionQuery.model_fields["limit"].default,
             )
     args = parser.parse_args(argv)
     try:
@@ -69,6 +118,24 @@ def main(argv: list[str] | None = None) -> int:
             result = storage.read(args.context)[1]
         elif args.command == "summary":
             result = engine.summarize(storage.read(args.context)[1])
+        elif args.command == "transactions":
+            query = TransactionQuery.model_validate(
+                {key: getattr(args, key) for key in TransactionQuery.model_fields}
+            )
+            result = select_transactions(
+                storage.read(args.context)[1].transactions, query
+            )
+        elif args.command == "import-transactions":
+            options = TransactionImportOptions.model_validate(
+                {
+                    "format": args.format,
+                    "confirmation_token": args.confirmation_token,
+                    "details": args.details,
+                }
+            )
+            result = engine.import_transactions(
+                args.context, args.file.read_bytes(), options
+            )
         else:
             payload = (
                 args.request.read_text(encoding="utf-8")

@@ -7,8 +7,10 @@ webapplicatie.
 ## Topo 2: eenvoudiger actueel overzicht
 
 Naast de bestaande engine is er nu `topo2`: complete records voor rekeningen,
-bezittingen en doelen, één bevestiging per groep wijzigingen en één lokaal
-`context.json`, zonder historie. Begin met een nieuwe context.
+bezittingen, doelen en transacties, één bevestiging per groep wijzigingen en één lokaal
+`context.json`, zonder wijzigingshistorie. Transacties kunnen via JSON/CSV worden
+geïmporteerd en gericht worden doorzocht; analyses doet de agent. Bestaande
+Topo 2-contexten blijven leesbaar en worden bij een bevestigde wijziging bijgewerkt.
 
 ```bash
 uv sync --frozen
