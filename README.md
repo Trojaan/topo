@@ -20,6 +20,7 @@ uv run topo2 summary --context /pad/naar/context.json
 ```
 
 Zie [Topo 2](docs/topo2.md) voor invoer, bevestiging en agentinstructies.
+Voor plannen 0–2 is er een [stappenplan voor een externe agentsessie](docs/plans/topo2-context/gebruikstest-00-02.md).
 Vanaf release `v0.6.0` installeren de onderstaande installers zowel `topo` als
 `topo2`. Topo 2 werkt zonder Python of `uv`; voer na installatie `topo2 contract`
 uit. Heb je Topo al, voer de installer opnieuw uit om ook `topo2` te installeren.

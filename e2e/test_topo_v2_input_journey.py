@@ -58,6 +58,7 @@ def test_sources_combined_repeated_updated_and_explicit_clear(tmp_path: Path) ->
         },
     }
     raw = context.read_bytes()
+    mtime = context.stat().st_mtime_ns
     unchanged = run("change", *options, *binding, request=repeated)["result"]
     validate(unchanged, schemas["change"]["output"])
     assert unchanged == {
@@ -66,6 +67,7 @@ def test_sources_combined_repeated_updated_and_explicit_clear(tmp_path: Path) ->
         "changes": [],
     }
     assert context.read_bytes() == raw
+    assert context.stat().st_mtime_ns == mtime
     updated_rows = convert_export(FIXTURES / "bank-updated.csv")
     assert {row["id"] for row in updated_rows[:4]} == {
         row["id"] for row in convert_export(FIXTURES / "bank.csv")

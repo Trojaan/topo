@@ -114,10 +114,11 @@ def main() -> int:
                 )
     # Topo 2 has its own boundary: no legacy imports, no orchestration inward.
     v2_forbidden = {
-        "models": {"cli", "engine", "storage"},
-        "storage": {"cli", "engine"},
-        "engine": {"cli"},
-        "transactions": {"cli", "engine", "storage"},
+        "models": {"cli", "engine", "storage", "reading"},
+        "storage": {"cli", "engine", "reading"},
+        "engine": {"cli", "reading"},
+        "transactions": {"cli", "engine", "storage", "reading"},
+        "reading": {"cli", "storage"},
     }
     for path in sorted((ROOT / "src" / "topo_v2").glob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))

@@ -1,6 +1,8 @@
 # Plan 1 — Compact lezen en gerichte onzekerheid
 
-Status: voorgesteld. Afhankelijkheid: plan 0 als gebruiksgrens.
+Status: technisch geleverd; menselijke gebruikspoort nog open.
+Afhankelijkheid: plan 0 als gebruiksgrens; diens menselijke bevestiging is niet ontvangen.
+Zie [levering, bewijs en beperkingen](01-bewijs.md).
 
 ## Resultaat
 

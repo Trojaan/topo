@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import Sequence
 from decimal import Decimal, localcontext
 from pathlib import Path
 from uuid import uuid4
@@ -11,15 +12,23 @@ from topo_v2 import storage
 from topo_v2.models import (
     Account,
     Asset,
+    AvailabilitySubtotal,
     ChangeRequest,
     ChangeResult,
     Context,
+    Debt,
     Difference,
+    Domain,
     Goal,
     GoalProgress,
+    Inventory,
+    InventoryState,
+    NetWealth,
+    NetWealthSubtotal,
     Subtotal,
     Summary,
     Transaction,
+    TransactionCoverage,
     TransactionImportOptions,
     TransactionImportResult,
 )
@@ -43,10 +52,10 @@ def initialize(path: Path) -> Context:
         return context
 
 
-def _apply[T: (Account, Asset, Goal, Transaction)](
-    records: list[T], add: list[T], update: list[T], delete: list[str]
-) -> list[T]:
-    touched = [record.id for record in [*add, *update]] + delete
+def _apply[
+    T: (Account, Asset, Debt, Goal, Transaction, Inventory, TransactionCoverage)
+](records: list[T], add: list[T], update: list[T], delete: Sequence[str]) -> list[T]:
+    touched = [record.id for record in [*add, *update]] + list(delete)
     if len(touched) != len(set(touched)):
         raise ChangeError("An ID can occur only once per change section")
     current = {record.id: record for record in records}
@@ -82,7 +91,43 @@ def _check_token(provided: str | None, expected: str) -> None:
 
 def _changed_context(before: Context, request: ChangeRequest) -> Context:
     return Context(
+        schema_version="topo2.context/4"
+        if (
+            before.schema_version == "topo2.context/4"
+            or request.debts.add
+            or request.debts.update
+            or any(
+                record.availability is not None or record.availability_note is not None
+                for record in [
+                    *request.accounts.add,
+                    *request.accounts.update,
+                    *request.assets.add,
+                    *request.assets.update,
+                ]
+            )
+        )
+        else "topo2.context/3"
+        if (
+            before.schema_version == "topo2.context/3"
+            or request.inventories.add
+            or request.inventories.update
+            or request.transaction_coverage.add
+            or request.transaction_coverage.update
+        )
+        else "topo2.context/2",
         context_id=before.context_id,
+        inventories=_apply(
+            before.inventories,
+            request.inventories.add,
+            request.inventories.update,
+            request.inventories.delete,
+        ),
+        transaction_coverage=_apply(
+            before.transaction_coverage,
+            request.transaction_coverage.add,
+            request.transaction_coverage.update,
+            request.transaction_coverage.delete,
+        ),
         accounts=_apply(
             before.accounts,
             request.accounts.add,
@@ -94,6 +139,9 @@ def _changed_context(before: Context, request: ChangeRequest) -> Context:
             request.assets.add,
             request.assets.update,
             request.assets.delete,
+        ),
+        debts=_apply(
+            before.debts, request.debts.add, request.debts.update, request.debts.delete
         ),
         goals=_apply(
             before.goals, request.goals.add, request.goals.update, request.goals.delete
@@ -109,7 +157,15 @@ def _changed_context(before: Context, request: ChangeRequest) -> Context:
 
 def _differences(before: Context, after: Context) -> list[Difference]:
     differences: list[Difference] = []
-    for section in ("accounts", "assets", "goals", "transactions"):
+    for section in (
+        "accounts",
+        "assets",
+        "debts",
+        "goals",
+        "transactions",
+        "inventories",
+        "transaction_coverage",
+    ):
         old = {record.id: record for record in getattr(before, section)}
         new = {record.id: record for record in getattr(after, section)}
         for identifier in sorted(old.keys() | new.keys()):
@@ -156,8 +212,11 @@ def change(
                 for section in (
                     request.accounts,
                     request.assets,
+                    request.debts,
                     request.goals,
                     request.transactions,
+                    request.inventories,
+                    request.transaction_coverage,
                 )
             ):
                 raise ChangeError("Request contains no operations")
@@ -245,4 +304,89 @@ def summarize(context: Context) -> Summary:
                     target_date=goal.target_date,
                 )
             )
-        return Summary(subtotals=subtotals, goals=goals)
+        return Summary(
+            subtotals=subtotals,
+            goals=goals,
+            net_wealth=_net_wealth(context, subtotals),
+            availability=_availability(context),
+        )
+
+
+def _net_wealth(context: Context, subtotals: list[Subtotal]) -> NetWealth:
+    declared = {item.id: item for item in context.inventories}
+    domains: tuple[Domain, ...] = ("accounts", "assets", "debts")
+    inventories = [
+        InventoryState(
+            id=domain,
+            status=declared[domain].status if domain in declared else "unknown",
+            checked_on=declared[domain].checked_on if domain in declared else None,
+        )
+        for domain in domains
+    ]
+    complete = all(item.status == "complete" for item in inventories)
+    by_currency = {item.currency: item for item in subtotals}
+    debts: dict[str, list[Debt]] = {}
+    for debt in context.debts:
+        debts.setdefault(debt.currency, []).append(debt)
+    result: list[NetWealthSubtotal] = []
+    for currency in sorted(by_currency.keys() | debts.keys()):
+        base = by_currency.get(currency)
+        records = debts.get(currency, [])
+        known = base.known_total if base else Decimal(0)
+        debt_total = sum(
+            (
+                item.amount
+                for item in records
+                if item.account_id is None and item.amount is not None
+            ),
+            Decimal(0),
+        )
+        missing = (base.missing_ids.copy() if base else []) + [
+            item.id for item in records if item.amount is None
+        ]
+        result.append(
+            NetWealthSubtotal(
+                currency=currency,
+                known_total=known - debt_total,
+                known_account_asset_total=known,
+                known_debt_total=debt_total,
+                linked_debt_ids=[
+                    item.id for item in records if item.account_id is not None
+                ],
+                missing_ids=missing,
+                complete=not missing,
+                inventory_complete=complete,
+            )
+        )
+    return NetWealth(subtotals=result, inventories=inventories)
+
+
+def _availability(context: Context) -> list[AvailabilitySubtotal]:
+    groups: dict[str, list[Account | Asset]] = {}
+    available: list[Account | Asset] = [*context.accounts, *context.assets]
+    for record in available:
+        groups.setdefault(record.currency, []).append(record)
+    result: list[AvailabilitySubtotal] = []
+    for currency, records in sorted(groups.items()):
+        totals = {"free": Decimal(0), "restricted": Decimal(0)}
+        unknown: list[str] = []
+        missing: list[str] = []
+        for record in records:
+            value = record.balance if isinstance(record, Account) else record.value
+            if value is None:
+                missing.append(record.id)
+            if record.availability in ("free", "restricted"):
+                if value is not None:
+                    totals[record.availability] += max(value, Decimal(0))
+            else:
+                unknown.append(record.id)
+        result.append(
+            AvailabilitySubtotal(
+                currency=currency,
+                known_free_total=totals["free"],
+                known_restricted_total=totals["restricted"],
+                unknown_availability_ids=unknown,
+                missing_ids=missing,
+            )
+        )
+    return result

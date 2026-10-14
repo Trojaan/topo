@@ -1,6 +1,8 @@
 # Plan 2 — Eenvoudige schulden en vermogen
 
-Status: voorgesteld. Vereist: plan 1.
+Status: technisch geleverd; menselijke gebruikspoort nog open.
+Vereist: plan 1 is technisch geleverd; menselijke bevestigingen van plannen 0 en 1
+zijn niet ontvangen. Zie [levering, bewijs en beperkingen](02-bewijs.md).
 
 ## Resultaat
 
@@ -20,10 +22,12 @@ schulden. De gebruiker hoeft geen beschikbaarheidsadministratie te onderhouden.
 - Toon bekende vrij beschikbare middelen afzonderlijk, met onbekende beschikbaarheid
   zichtbaar. Bezitsoort alleen bewijst geen liquiditeit of verkoopwaarde.
 
-## Voor implementatie beslissen
+## Gekozen behandeling
 
-Definieer de behandeling van negatieve rekeningsaldi en voorkom dubbeltelling met
-schuldrecords. Geen automatische schuldherkenning. Ontbrekende schuldinformatie
+Negatieve rekeningsaldi tellen eenmaal mee. Een schuldrecord voor dezelfde
+roodstand vereist een expliciete rekeningkoppeling met overeenkomend bedrag,
+valuta en peildatum; deze schuld wordt niet opnieuw afgetrokken. Geen automatische
+schuldherkenning. Ontbrekende schuldinformatie
 maakt de nettovermogensclaim beperkt, niet het gehele overzicht onbruikbaar.
 Betalingen staan later in plan 3; hier geen tweede maandlastberekening.
 

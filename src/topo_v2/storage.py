@@ -57,9 +57,23 @@ def read(path: Path) -> tuple[bytes, Context]:
 def save(path: Path, context: Context) -> None:
     """Validate and flush a private sibling before atomic replacement."""
     context = Context.model_validate(
-        {**context.model_dump(), "schema_version": "topo2.context/2"}
+        {
+            **context.model_dump(),
+            "schema_version": context.schema_version
+            if context.schema_version in ("topo2.context/3", "topo2.context/4")
+            else "topo2.context/2",
+        }
     )
-    payload = context.model_dump_json(indent=2) + "\n"
+    excluded: dict[str, Any] = {}
+    if context.schema_version != "topo2.context/4":
+        excluded = {
+            "debts": True,
+            "accounts": {"__all__": {"availability", "availability_note"}},
+            "assets": {"__all__": {"availability", "availability_note"}},
+        }
+    if context.schema_version == "topo2.context/2":
+        excluded.update({"inventories": True, "transaction_coverage": True})
+    payload = context.model_dump_json(indent=2, exclude=excluded) + "\n"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

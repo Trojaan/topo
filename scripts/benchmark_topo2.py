@@ -73,15 +73,57 @@ def main() -> int:
                 "type": "savings",
                 "balance": "1234.56",
                 "as_of": "2026-10-04",
+                "availability": "free" if i % 2 == 0 else "restricted",
             }
             for i in range(1000)
         ]
-        request: dict[str, Any] = {"accounts": {"add": records}}
+        request: dict[str, Any] = {
+            "accounts": {"add": records},
+            "assets": {
+                "add": [
+                    {
+                        "id": "synthetic_home",
+                        "label": "Synthetic home",
+                        "type": "property",
+                        "value": "300000",
+                        "as_of": "2026-10-04",
+                        "availability": "restricted",
+                    }
+                ]
+            },
+            "debts": {
+                "add": [
+                    {
+                        "id": "synthetic_mortgage",
+                        "label": "Synthetic mortgage",
+                        "type": "mortgage",
+                        "amount": "200000",
+                        "as_of": "2026-10-04",
+                    },
+                    {
+                        "id": "synthetic_unknown",
+                        "label": "Synthetic unknown debt",
+                        "type": "loan",
+                    },
+                    {
+                        "id": "synthetic_usd",
+                        "label": "Synthetic dollar debt",
+                        "type": "loan",
+                        "amount": "100",
+                        "currency": "USD",
+                        "as_of": "2026-10-04",
+                    },
+                ]
+            },
+        }
         preview, _ = run("change", request)
         request["confirmation_token"] = preview["confirmation_token"]
         run("change", request)
         _, show = run("show")
-        _, summary = run("summary")
+        summary_before, summary = run("summary")
+        compact_before, _ = run(
+            "context", None, "--reference-date", "2026-10-14", "--max-age-days", "30"
+        )
         updated = [{**record, "balance": "1235.56"} for record in records]
         request = {"accounts": {"update": updated}}
         preview, preview_time = run("change", request)
@@ -89,7 +131,7 @@ def main() -> int:
         result, change_time = run("change", request)
         assert result["status"] == "applied" and len(result["changes"]) == 1000
         summary_result, _ = run("summary")
-        assert summary_result["subtotals"][0]["known_total"] == "1235560.00"
+        assert summary_result["subtotals"][0]["known_total"] == "1535560.00"
         transactions = [
             {
                 "id": f"transaction_{i:05d}",
@@ -144,12 +186,25 @@ def main() -> int:
         assert selected["total"] == 1
         # Re-measure reads with the full transaction fixture present.
         _, show = run("show")
-        _, summary = run("summary")
+        summary_after, summary = run("summary")
+        assert "transactions" not in summary_after
+        assert len(json.dumps(summary_after)) == len(json.dumps(summary_before))
+        assert (
+            summary_after["net_wealth"]["subtotals"][0]["known_total"] == "1335560.00"
+        )
+        assert summary_after["net_wealth"]["subtotals"][0]["missing_ids"] == [
+            "synthetic_unknown"
+        ]
         updated = [{**record, "balance": "1235.57"} for record in records]
         request = {"accounts": {"update": updated}}
         preview, preview_time = run("change", request)
         request["confirmation_token"] = preview["confirmation_token"]
         _, change_time = run("change", request)
+        compact, compact_time = run(
+            "context", None, "--reference-date", "2026-10-14", "--max-age-days", "30"
+        )
+        assert "transactions" not in compact
+        assert len(json.dumps(compact)) == len(json.dumps(compact_before))
         # Omitted labels must survive a changed import, then a repeated import.
         preserved = [
             {key: value for key, value in record.items() if key != "category"}
@@ -188,6 +243,7 @@ def main() -> int:
         timings = {
             "show": show,
             "summary": summary,
+            "context": compact_time,
             "preview": preview_time,
             "confirmed_bulk_update": change_time,
             f"transaction_search_{args.transactions}": search_time,

@@ -1,7 +1,8 @@
 # Topo 2: snel van bronnen naar bruikbaar inzicht
 
-Status: plan 0 technisch geleverd; de menselijke gebruiksbevestiging staat nog
-open. Zie [bewijs en beperkingen](00-bewijs.md). Plannen 1–9 zijn niet geïmplementeerd.
+Status: plannen 0, 1 en 2 technisch geleverd; de menselijke gebruiksbevestiging staat
+nog open. Zie [bewijs plan 0](00-bewijs.md) en [bewijs plan 1](01-bewijs.md).
+Zie ook [bewijs plan 2](02-bewijs.md). Plannen 3–9 zijn niet geïmplementeerd.
 
 Doel: met transacties, screenshots en weinig aanvullende input snel voldoende
 actuele context opbouwen om samen met een agent financiële vragen en doelen te
@@ -133,3 +134,6 @@ krijgt een afzonderlijk plan. Technische snelheid vervangt de gebruikspoort niet
 Gebruik bijvoorbeeld: “Voer plan 0 uit uit docs/plans/topo2-context/00-invoer.md.
 Lees eerst het overzicht, beperk je tot dit plan en werk na verificatie de status bij.”
 Ga pas verder wanneer het voorgaande resultaat technisch én in gebruik is gecontroleerd.
+
+
+Een onafhankelijke sessie buiten Codex kan de [externe gebruikstest voor plannen 0–2](gebruikstest-00-02.md) volgen. Dit is een handleiding, geen uitvoering van plan 3.
