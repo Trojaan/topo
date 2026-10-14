@@ -4,7 +4,8 @@
 
 De begrippen rond historie, generaties, beweringen en voorstellen hieronder gelden
 voor de bestaande Topo-engine. Topo 2 bewaart uitsluitend complete actuele records
-voor rekeningen, bezittingen en doelen, zonder historie en zonder afzonderlijke
+voor rekeningen, bezittingen, doelen en transacties, zonder wijzigingshistorie en
+zonder afzonderlijke
 toerekening. Zie [Topo 2](docs/topo2.md) voor het vereenvoudigde model.
 
 ## Topo

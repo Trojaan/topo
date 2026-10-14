@@ -33,8 +33,12 @@ scripts/               Local launcher, lints, and verification entry points
 rules below apply there. `src/topo_v2/` is a separate current-state engine, exposed
 as `topo2`. Read `docs/topo2.md` for its records, CLI and agent confirmation flow.
 Topo 2 never imports the old engine and overwrites only its own current JSON
-context after one explicitly human-approved preview. It has no history or
-proposals. Always use synthetic fixtures and keep personal contexts outside Git.
+context after one explicitly human-approved preview. Transactions are ordinary
+records: use import-transactions and filtered/paginated transactions queries.
+They never adjust stored balances. The agent performs transaction analyses.
+Topo 2 has no mutation history or proposals; transaction records from prior
+years remain available. Always use synthetic fixtures and keep personal contexts
+outside Git.
 
 ## Golden rules (historical Topo)
 

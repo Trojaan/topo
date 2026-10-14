@@ -1,9 +1,11 @@
 # Topo 2: het actuele vermogensoverzicht
 
 Topo 2 is een zelfstandige lokale engine naast de bestaande Topo. Het bewaart
-uitsluitend de laatste toestand van rekeningen, bezittingen en doelen. Een
+de laatste toestand van rekeningen, bezittingen, doelen en transactierecords. Een
 wijziging vervangt de eerdere gegevens: er is geen financiële historie, changelog,
-herstel naar eerdere standen of gegevensmigratie. Gebruik een nieuwe context.
+herstel naar eerdere standen of import van historische Topo-pakketten. Transacties
+uit eerdere jaren blijven gewone records; eerdere versies van die records worden
+niet bewaard. Bestaande Topo 2-contexten blijven bruikbaar.
 
 ## Beginnen
 
@@ -34,7 +36,7 @@ Schrijf een request of geef het via stdin door:
 
 ```json
 {
-  "contract_version": "topo2.cli/1",
+  "contract_version": "topo2.cli/2",
   "accounts": {
     "add": [
       {
@@ -70,7 +72,7 @@ menselijke goedkeuring de teruggegeven token toe als `confirmation_token` aan
 **hetzelfde request** en voer hetzelfde commando uit. Alle wijzigingen worden
 samen opgeslagen of geheel geweigerd. Er zijn geen opgeslagen voorstellen.
 
-`add`, `update` en `delete` zijn beschikbaar onder `accounts`, `assets` en `goals`.
+`add`, `update` en `delete` zijn beschikbaar onder `accounts`, `assets`, `goals` en `transactions`.
 `update` vervangt een compleet record, inclusief optionele velden; haal het huidige
 record eerst op met `show`. `delete` bevat IDs. Een ID mag per sectie slechts één
 keer worden gewijzigd. IDs zijn globaal uniek, stabiel en onafhankelijk van labels.
@@ -110,12 +112,108 @@ consistentiecontrole, geen bewijs van menselijke identiteit of toestemming.
   niet als bekend nul gepresenteerd. Dit is geen volledig nettovermogen: afzonderlijke
   schulden zijn nog niet gemodelleerd.
 
+## Transacties importeren en zoeken
+
+Vanaf v0.7.0 gebruikt Topo 2 `topo2.cli/2` en `topo2.context/2`. Bestanden met
+`topo2.context/1` blijven leesbaar zonder herschrijven. Een preview en een
+identieke herimport veranderen ze evenmin. De eerstvolgende bevestigde wijziging
+slaat de volledige context in versie 2 op en behoudt de bestaande gegevens.
+Oudere Topo 2-programma’s kunnen versie 2 niet lezen; gebruik de actuele installer.
+Nieuwe JSON-aanvragen gebruiken contractversie 2.
+
+Een transactie bevat een vaste `id`, `account_id`, `booking_date`, getekend
+`amount`, expliciete `currency` en `description`. `category` en `source` zijn
+optionele vrije labels. De omschrijving mag leeg zijn. Datum en bedrag zijn
+verplicht; nul, positieve en negatieve bedragen zijn geldig. IDs zijn globaal
+uniek en bestaan uit letters, cijfers, `_` of `-`, maximaal 128 tekens.
+De rekening moet bestaan na de volledige batch. De transactievaluta wordt
+letterlijk bewaard en hoeft niet gelijk te zijn aan de rekeningvaluta; er vindt
+geen omrekening plaats.
+
+Transacties tellen niet nogmaals mee in vermogen of doelvoortgang. Topo leidt
+geen saldo af uit transacties. Transactiehistorie is geen wijzigingshistorie:
+correcties vervangen een record en verwijderingen bewaren geen oude versie.
+
+### Import
+
+JSON bevat een lijst volledige transactierecords. CSV is UTF-8 (een BOM mag)
+met komma als scheidingsteken en dezelfde veldnamen; tekst met komma’s of
+regelovergangen wordt gequote. `category` en `source` mogen ontbreken of leeg
+zijn. De overige kolommen zijn verplicht; dubbele of onbekende kolommen en
+onvolledige rijen worden geweigerd.
+
+```csv
+id,account_id,booking_date,amount,currency,description,category,source
+bank_tx_001,spaarrekening,2026-10-13,-12.50,EUR,Boodschappen,Boodschappen,Export
+```
+
+```bash
+topo2 import-transactions --context /pad/naar/context.json \
+  --file /pad/naar/transacties.csv --format csv
+```
+
+Dit geeft aantallen `added`, `updated`, `skipped`, `total_changes`, maximaal twintig
+oude/nieuwe voorbeelden in `changes`, en een `confirmation_token`. `truncated`
+geeft aan of er meer wijzigingen zijn; `--details` geeft alle wijzigingen.
+Na expliciete menselijke goedkeuring:
+
+```bash
+topo2 import-transactions --context /pad/naar/context.json \
+  --file /pad/naar/transacties.csv --format csv --confirmation-token TOKEN
+```
+
+Vaste IDs bepalen herimport: identieke records worden overgeslagen; gewijzigde
+records vervangen het volledige bestaande record. Neem eigen categorieën en
+bronlabels daarom mee wanneer je die wilt behouden. Er is geen automatische
+deduplicatie op datum, bedrag of omschrijving. Dubbele IDs binnen hetzelfde
+bestand en ongeldige records weigeren de gehele import. Een volledig identieke
+of lege geldige import retourneert `status: unchanged`, zonder token of schrijfactie.
+
+De bevestiging bindt alle ingelezen bestandsbytes (inclusief overgeslagen records),
+het formaat en de actuele context. Ook een gewijzigde overgeslagen regel of
+wijziging in witruimte vereist een nieuwe preview. `--details` verandert alleen
+de weergave en kan bij bevestiging worden aangepast. Het bronbestand wordt niet
+gekopieerd naar de context of als bewijsrecord opgeslagen.
+
+Voor handmatige invoer, correctie en verwijdering bestaat dezelfde
+`transactions.add/update/delete`-vorm in `change`. Rekening en transacties kunnen
+in één batch worden toegevoegd of samen worden verwijderd; een rekening met
+achterblijvende transacties kan niet worden verwijderd.
+
+### Gericht opvragen
+
+```bash
+topo2 transactions --context /pad/naar/context.json \
+  --account spaarrekening --from-date 2026-10-01 --to-date 2026-10-31 \
+  --search boodschappen --currency EUR --min-amount -100 --max-amount 0 \
+  --offset 0 --limit 100
+```
+
+Alle filters gelden samen. Datums en bedraggrenzen zijn inclusief. `--category`
+matcht het vrije label exact; `--search` zoekt letterlijk, zonder onderscheid
+tussen hoofdletters, in omschrijving, categorie en bron. Er zijn geen regexes
+of uitvoerbare zoekexpressies. Bedragfilters vergelijken de opgegeven getallen,
+zonder valutaomrekening; gebruik `--currency` wanneer je één valuta bedoelt.
+
+De uitvoer bevat `records`, het totale aantal treffers `total`, `offset` en
+`limit`. De sortering is oplopend op boekingsdatum en vervolgens ID. Standaard
+worden honderd records geleverd, maximaal duizend per pagina. Gebruik opeenvolgende
+offsets op een ongewijzigde context om alle treffers te lezen. Onbekende
+filterwaarden leveren nul treffers op. Er zijn geen financiële subtotalen of
+analyses in deze uitvoer; de agent rekent zelf met de gerichte selectie.
+`show` blijft de volledige context inclusief alle transacties tonen.
+
 ## Agentinstructies voor een financiële werkmap
 
 Neem de volgende instructies over in de `AGENTS.md` van de financiële werkmap:
 
 > Gebruik voor deze context uitsluitend `topo2` en ontdek het contract met
-> `topo2 contract`. Lees complete records met `show`. Combineer samenhangende
+> `topo2 contract`. Lees rekeningen, bezittingen en doelen met `show`. Gebruik
+> `transactions` met filters en paginering voor transacties; lees niet steeds
+> de hele context. Importeer JSON/CSV met `import-transactions` en vaste IDs.
+> Bewaar vrije categorieën bij vervanging als ze moeten blijven staan.
+> Transacties wijzigen rekeningstanden niet automatisch. Analyses voer je
+> buiten de engine uit op opgevraagde records. Combineer samenhangende
 > wijzigingen in één `change`-request. Toon de oude en nieuwe waarden, EUR als
 > standaardvaluta en eventuele ontbrekende waarden. Vraag één expliciete menselijke
 > bevestiging voor de volledige preview. Gebruik de token pas na deze bevestiging.
@@ -149,9 +247,12 @@ De optionele synthetische prestatiepoort is:
 uv run python scripts/benchmark_topo2.py
 ```
 
-Deze meet afzonderlijke CLI-processen met 1.000 records en vereist minder dan één
-seconde voor lezen, samenvatten, preview en bevestigde bulkupdate. Hij leest geen
-persoonlijke gegevens en verwijdert de tijdelijke context na afloop.
+Deze meet afzonderlijke CLI-processen met 1.000 rekeningen en 10.000 transacties.
+Gericht zoeken, een preview en een bevestigde update van 1.000 transacties moeten
+binnen één seconde blijven. Hij leest geen persoonlijke gegevens en verwijdert de tijdelijke context na afloop.
 
-Tally-import, migratie, cashflow, afzonderlijke schulden,
-projecties en een gebruikersinterface vallen buiten deze eerste versie.
+Een specifieke Tally-adapter, migratie van historische Topo-pakketten,
+cashflowberekeningen, automatische categorisatie, transferherkenning,
+saldo-afleiding, afzonderlijke schulden, projecties en een gebruikersinterface
+vallen buiten deze versie. De agent kan exports omzetten naar het vaste
+importformaat en analyses uitvoeren op opgevraagde transacties.

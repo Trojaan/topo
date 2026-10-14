@@ -117,6 +117,7 @@ def main() -> int:
         "models": {"cli", "engine", "storage"},
         "storage": {"cli", "engine"},
         "engine": {"cli"},
+        "transactions": {"cli", "engine", "storage"},
     }
     for path in sorted((ROOT / "src" / "topo_v2").glob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))

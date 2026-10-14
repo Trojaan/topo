@@ -56,7 +56,9 @@ def read(path: Path) -> tuple[bytes, Context]:
 
 def save(path: Path, context: Context) -> None:
     """Validate and flush a private sibling before atomic replacement."""
-    context = Context.model_validate(context.model_dump())
+    context = Context.model_validate(
+        {**context.model_dump(), "schema_version": "topo2.context/2"}
+    )
     payload = context.model_dump_json(indent=2) + "\n"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

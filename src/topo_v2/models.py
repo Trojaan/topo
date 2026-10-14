@@ -6,8 +6,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION: Literal["topo2.cli/1"] = "topo2.cli/1"
-SCHEMA_VERSION: Literal["topo2.context/1"] = "topo2.context/1"
+CONTRACT_VERSION: Literal["topo2.cli/2"] = "topo2.cli/2"
+SCHEMA_VERSION: Literal["topo2.context/2"] = "topo2.context/2"
 Identifier = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
 ]
@@ -88,15 +88,27 @@ class Goal(Model):
     asset_ids: list[Identifier] = Field(default_factory=list)
 
 
-Record = Account | Asset | Goal
+class Transaction(Model):
+    id: Identifier
+    account_id: Identifier
+    booking_date: date
+    amount: Money
+    currency: Currency
+    description: str
+    category: Label | None = None
+    source: Label | None = None
+
+
+Record = Account | Asset | Goal | Transaction
 
 
 class Context(Model):
-    schema_version: Literal["topo2.context/1"] = SCHEMA_VERSION
+    schema_version: Literal["topo2.context/1", "topo2.context/2"] = SCHEMA_VERSION
     context_id: str
     accounts: list[Account] = Field(default_factory=list)
     assets: list[Asset] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
+    transactions: list[Transaction] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def references(self) -> Self:
@@ -104,11 +116,19 @@ class Context(Model):
             [account.id for account in self.accounts]
             + [asset.id for asset in self.assets]
             + [goal.id for goal in self.goals]
+            + [transaction.id for transaction in self.transactions]
         )
         if len(all_ids) != len(set(all_ids)):
             raise ValueError("Record IDs must be unique across the context")
         accounts = {account.id: account for account in self.accounts}
         assets = {asset.id: asset for asset in self.assets}
+        if self.schema_version == "topo2.context/1" and self.transactions:
+            raise ValueError("Transactions require topo2.context/2")
+        for transaction in self.transactions:
+            if transaction.account_id not in accounts:
+                raise ValueError(
+                    f"Transaction {transaction.id}: unknown account {transaction.account_id}"
+                )
         for asset in self.assets:
             if asset.broker_account_id is not None:
                 broker = accounts.get(asset.broker_account_id)
@@ -148,16 +168,23 @@ class GoalChanges(Model):
     delete: list[Identifier] = Field(default_factory=list)
 
 
+class TransactionChanges(Model):
+    add: list[Transaction] = Field(default_factory=list)
+    update: list[Transaction] = Field(default_factory=list)
+    delete: list[Identifier] = Field(default_factory=list)
+
+
 class ChangeRequest(Model):
-    contract_version: Literal["topo2.cli/1"] = CONTRACT_VERSION
+    contract_version: Literal["topo2.cli/2"] = CONTRACT_VERSION
     accounts: AccountChanges = Field(default_factory=AccountChanges)
     assets: AssetChanges = Field(default_factory=AssetChanges)
     goals: GoalChanges = Field(default_factory=GoalChanges)
+    transactions: TransactionChanges = Field(default_factory=TransactionChanges)
     confirmation_token: str | None = None
 
 
 class Difference(Model):
-    section: Literal["accounts", "assets", "goals"]
+    section: Literal["accounts", "assets", "goals", "transactions"]
     id: str
     before: Record | None
     after: Record | None
@@ -192,3 +219,56 @@ class Summary(Model):
     kind: Literal["wealth_overview"] = "wealth_overview"
     subtotals: list[Subtotal]
     goals: list[GoalProgress]
+
+
+class TransactionImportOptions(Model):
+    format: Literal["json", "csv"]
+    confirmation_token: str | None = None
+    details: bool = False
+
+
+class TransactionImportResult(Model):
+    status: Literal["preview", "applied", "unchanged"]
+    confirmation_token: str | None
+    added: int
+    updated: int
+    skipped: int
+    total_changes: int
+    truncated: bool
+    changes: list[Difference]
+
+
+class TransactionQuery(Model):
+    account_id: Identifier | None = None
+    from_date: date | None = None
+    to_date: date | None = None
+    currency: Currency | None = None
+    category: Label | None = None
+    min_amount: Money | None = None
+    max_amount: Money | None = None
+    search: str | None = None
+    offset: Annotated[int, Field(ge=0)] = 0
+    limit: Annotated[int, Field(ge=1, le=1000)] = 100
+
+    @model_validator(mode="after")
+    def valid_ranges(self) -> Self:
+        if (
+            self.from_date is not None
+            and self.to_date is not None
+            and self.from_date > self.to_date
+        ):
+            raise ValueError("from_date must not follow to_date")
+        if (
+            self.min_amount is not None
+            and self.max_amount is not None
+            and self.min_amount > self.max_amount
+        ):
+            raise ValueError("min_amount must not exceed max_amount")
+        return self
+
+
+class TransactionQueryResult(Model):
+    records: list[Transaction]
+    total: int
+    offset: int
+    limit: int

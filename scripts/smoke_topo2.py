@@ -20,8 +20,10 @@ def smoke(executable: Path) -> dict[str, Any]:
     with TemporaryDirectory(prefix="topo2-smoke-") as directory:
         context = Path(directory) / "context.json"
 
-        def run(command: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
-            args = [str(executable), command, "--json"]
+        def run(
+            command: str, request: dict[str, Any] | None = None, *arguments: str
+        ) -> dict[str, Any]:
+            args = [str(executable), command, "--json", *arguments]
             if command != "contract":
                 args.extend(["--context", str(context)])
             process = subprocess.run(
@@ -88,6 +90,44 @@ def smoke(executable: Path) -> dict[str, Any]:
             len(state["accounts"]) == len(state["assets"]) == len(state["goals"]) == 1
         )
         assert "history" not in state
+        transactions = Path(directory) / "transactions.csv"
+        transactions.write_text(
+            "id,account_id,booking_date,amount,currency,description,category,source\n"
+            "posting,broker,2026-10-13,-12.50,EUR,Synthetic groceries,Groceries,Smoke export\n",
+            encoding="utf-8",
+        )
+        args = ("--file", str(transactions), "--format", "csv")
+        original = context.read_bytes()
+        preview = run("import-transactions", None, *args)
+        assert preview["added"] == 1 and preview["status"] == "preview"
+        assert context.read_bytes() == original
+        assert (
+            run(
+                "import-transactions",
+                None,
+                *args,
+                "--confirmation-token",
+                preview["confirmation_token"],
+            )["status"]
+            == "applied"
+        )
+        original = context.read_bytes()
+        assert run("import-transactions", None, *args)["status"] == "unchanged"
+        selected = run(
+            "transactions",
+            None,
+            "--account",
+            "broker",
+            "--search",
+            "GROCERIES",
+            "--from-date",
+            "2026-10-13",
+            "--to-date",
+            "2026-10-13",
+        )
+        assert selected["total"] == 1 and selected["records"][0]["amount"] == "-12.50"
+        assert run("summary")["subtotals"][0]["known_total"] == "300.30"
+        assert context.read_bytes() == original
         return {
             "status": "passed",
             "version": version,
@@ -107,7 +147,7 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload, encoding="utf-8")
     print(
-        f"{proof['version']}: synthetic init, preview, confirm, summary and show passed"
+        f"{proof['version']}: synthetic init, preview, confirm, summary, transaction import and search passed"
     )
     return 0
 

@@ -143,3 +143,16 @@ changes and noncanonical-layout fallback with complete canonical serialization.
 
 See [Performance measurements](performance.md) for the synthetic 7,500-record,
 21-generation fixture, ten-mutation work round and profiling limitations.
+
+## Topo 2-transacties
+
+De transactie-journeys bewijzen JSON/CSV-import, herimport zonder wijziging,
+correctie, verwijdering, gecombineerde rekening/transactie-invoer, filters en
+paginering. Een versie-1-context blijft bij lezen en preview byte voor byte gelijk;
+alleen een bevestigde wijziging slaat versie 2 op. Unit-tests bewaken ook de
+volledige bestandsbinding van importtokens, ongeldige CSV, financiële precisie,
+gekoppelde verwijdering en opslagfouten zonder gedeeltelijke wijziging.
+De bestaande standalone smoke oefent import en zoeken ook vanuit het werkelijk
+gebouwde en geïnstalleerde programma uit op alle releaseplatformen.
+De synthetische benchmark bevat 10.000 transacties en vereist minder dan één
+seconde voor gericht zoeken en een bulkupdate van 1.000 transacties.
