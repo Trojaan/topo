@@ -4,7 +4,8 @@ Status: technisch geleverd; zie [bewijs](07-bewijs.md). De financiële foto,
 het maandbeeld en doelen zijn samen geleverd bovenop plannen 1–4 en 6.
 Lege en gedeeltelijke contexten blijven bruikbaar. De menselijke gebruikspoorten
 van plannen 3, 4 en 6 blijven open; technische autorisatie bevestigt geen feiten.
-De volledige verify-run blijft geblokkeerd door bestaande lintfouten.
+De volledige verify-run in de oorspronkelijke werkmap blijft geblokkeerd door
+bestaande lintfouten in niet meegeleverde onderzoeksmappen.
 
 ## Resultaat
 

@@ -5,7 +5,8 @@ basisjourney in gebruik geleverd; zie [extern bewijs](gebruik-bewijs-00-02.md).
 Herstelstappen en beperkingen blijven onderdeel van dat bewijs. Plan 6 is [technisch geleverd](06-bewijs.md), met een nog open nieuwe menselijke
 gebruikspoort. Plan 3 is [technisch geleverd](03-bewijs.md); menselijke gebruiksacceptatie
 blijft open. Plan 4 is [technisch geleverd](04-bewijs.md), met menselijke gebruiksacceptatie nog open.
-De volledige verify-run blijft geblokkeerd door bestaande lintfouten. De gebruiker heeft technische uitvoering expliciet toegestaan ondanks
+De volledige verify-run in de oorspronkelijke werkmap blijft geblokkeerd door
+bestaande lintfouten in ongerelateerde, niet meegeleverde onderzoeksmappen. De gebruiker heeft technische uitvoering expliciet toegestaan ondanks
 de open menselijke poorten van plannen 3, 4 en 6. Die blijven expliciet open;
 de opdracht bevestigt geen financiële feiten, reserveringen of verwachtingen.
 Plan 7 levert de lokale HTML-rapportlaag; zie [bewijs](07-bewijs.md).
