@@ -239,6 +239,70 @@ def smoke(executable: Path) -> dict[str, Any]:
         assert run("import-transactions", None, *args)["status"] == "unchanged"
         assert run("show")["debts"] == state["debts"]
         assert context.read_bytes() == raw and context.stat().st_mtime_ns == mtime
+        # Release smoke for the newly shipped capabilities. These synthetic
+        # tokens prove CLI mechanics only, never human financial acceptance.
+        current = run("show")
+        enriched_goal = {
+            **current["goals"][0],
+            "reserved_amount": "100",
+            "monthly_contribution": "25",
+        }
+        classified = {**current["transactions"][0], "kind": "expense"}
+        extension: dict[str, Any] = {
+            "goals": {"update": [enriched_goal]},
+            "transactions": {"update": [classified]},
+            "cashflows": {
+                "add": [
+                    {
+                        "id": "salary",
+                        "label": "Synthetic income",
+                        "kind": "income",
+                        "amount": "3000",
+                        "frequency": "four_weekly",
+                        "start_date": "2026-10-14",
+                    },
+                    {
+                        "id": "costs",
+                        "label": "Synthetic cost",
+                        "kind": "expense",
+                        "amount": "100",
+                        "frequency": "monthly",
+                        "start_date": "2026-10-14",
+                    },
+                ]
+            },
+            "cashflow_settings": {"EUR": {"minimum_reserve": "50"}},
+        }
+        preview = run("change", extension)
+        extension["confirmation_token"] = preview["confirmation_token"]
+        assert run("change", extension)["status"] == "applied"
+        raw, mtime = context.read_bytes(), context.stat().st_mtime_ns
+        aggregate = run("aggregate-transactions", None, "--group-by", "month")
+        assert aggregate["totals"][0]["expenses"] == "13.50"
+        monthly = run("monthly-room", None, "--reference-date", "2026-10-14")
+        assert monthly["currencies"][0]["known_room"]["lower"] == "3150.00000000"
+        assert monthly["currencies"][0]["minimum_reserve"] == "50"
+        goal = run("summary")["goals"][0]
+        assert goal["remaining_amount"] == "900"
+        assert goal["linked_value"]["known_amount"] == "300.30"
+        report_path = Path(directory) / "report.html"
+        report = run(
+            "report",
+            None,
+            "--output",
+            str(report_path),
+            "--reference-date",
+            "2026-10-14",
+        )
+        assert report["html_bytes"] == report_path.stat().st_size
+        assert report["metadata"]["report_version"] == "topo2.report/1"
+        html = report_path.read_text(encoding="utf-8")
+        assert "structurele verwachtingen" in html and "3150.00000000" in html
+        assert (
+            "Synthetic buffer" in html
+            and "geen gezamenlijke of exclusieve dekking" in html
+        )
+        assert context.read_bytes() == raw and context.stat().st_mtime_ns == mtime
         return {
             "status": "passed",
             "version": version,
@@ -258,7 +322,7 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload, encoding="utf-8")
     print(
-        f"{proof['version']}: synthetic source-bound changes, import preservation, compact context and net wealth passed"
+        f"{proof['version']}: synthetic changes, import preservation, wealth, aggregates, expectations, goals and offline HTML passed"
     )
     return 0
 

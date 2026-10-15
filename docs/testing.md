@@ -178,8 +178,9 @@ preview, intervalgrenzen en behoud bij import. `tests/test_topo_v2_reading.py`
 controleert gekoppelde doelonzekerheid, lege complete inventaris en tokenbinding.
 De Topo 2-benchmark meet ook `context` met expliciet ouderdomsbeleid en bewaakt
 dat de uitvoergrootte gelijk blijft na toevoegen van transacties. Zie
-[het bewijs van plan 1](plans/topo2-context/01-bewijs.md) voor metingen en de open
-menselijke gebruikspoort.
+[het bewijs van plan 1](plans/topo2-context/01-bewijs.md) voor metingen en
+[extern gebruiksbewijs 0–2](plans/topo2-context/gebruik-bewijs-00-02.md) voor de
+inmiddels geleverde basisjourney, inclusief herstelstappen en beperkingen.
 
 
 De plan-2-journey `e2e/test_topo_v2_wealth_journey.py` bewijst afzonderlijke valuta,
@@ -192,3 +193,81 @@ De benchmark bevat nu synthetische schulden en beschikbaarheid en bewaakt dat zo
 summary als context compact blijven bij groei van transacties. Zie
 [plan-2-bewijs](plans/topo2-context/02-bewijs.md); gescripte tokens bewijzen geen
 menselijke gebruiksbevestiging.
+
+
+## Topo 2-transactiebetekenis en aggregaties
+
+Plan 6 voegt unit- en black-box controles toe voor gesigneerde correcties,
+rekeningbewegingen versus economische cashflow, transferhelften, onbekenden,
+valuta-isolatie, grote Decimal-sommen, gecombineerde filters en deterministische
+maand-/categoriegroepen. Classificatievolledigheid en expliciete intervaldekking
+worden onafhankelijk getoetst. Oude contexten 1–4 migreren pas bij een effectieve
+bevestigde wijziging met kind; versie 5 blijft behouden na wissen/verwijderen.
+
+De bronjourney voor vermogen draait ook met voorbereide soorten en bewijst behoud
+bij exportupdate en herimport. Alle gescripte tokens blijven uitsluitend technisch
+bewijs. De nieuwe menselijke gebruikspoort is afzonderlijk vermeld in
+[plan-6-bewijs](plans/topo2-context/06-bewijs.md).
+
+De benchmark meet ook ongesplitste, gefilterde en maand/categorieaggregaties over
+meerdere maanden, categorieën, soorten en valuta. Hij meet volledige CLI-processen,
+uitvoerbytes en piek-RSS bij 10.000 en 100.000 transacties, met één scan per aanroep
+in plaats van per groep. Alleen de bestaande 10.000-grens van één seconde geldt
+als harde poort; 100.000 blijft een schaalprofiel. Compacte uitvoer sluit volledig
+inlezen en valideren van de JSON-opslag niet uit.
+
+
+## Topo 2 — verwachtingen en structureel maandbeeld (plan 3)
+
+`tests/test_topo_v2_cashflows.py` toetst vaste factoren, inclusieve datumgrenzen,
+naar buiten afgeronde banden, valuta, onbekend/nul, inventaris, schuldverwijzingen
+en instellingen. Een onleesbare transactieverzameling bewijst dat de maandprojectie
+geen transacties scant. De engine voert geen patroonherkenning of overlapdetectie uit.
+
+`e2e/test_topo_v2_cashflow_journey.py` begint bij de oorspronkelijke plan-0-export,
+gebruikt CLI-aggregaties en de expliciete synthetische verwachtingenbron en bewijst
+één gezamenlijke target-preview. Een aparte tijdelijke fixturecontext voedt de
+CLI-aggregatie vóór die preview; dit is testopstelling, geen extra gebruikersstap.
+Alle tokens zijn uitsluitend mechanisch bewijs. De test bewijst tevens behoud van
+verwachtingen, instellingen, soorten, schulden, beschikbaarheid en verrijkingen bij
+exportupdate/herimport, byte-/mtime-identieke no-ops, oude contexten 1–5 en versie 6.
+
+De benchmark meet monthly-room en het uitgebreide context in volledige processen
+bij 10.000/100.000 transacties, inclusief bytes en eigen piek-RSS. Het maandresultaat
+blijft exact gelijk na toevoegen/wijzigen van transacties; volledig JSON-inlezen en
+valideren blijven wel groeien. Alleen 10.000 heeft de bestaande éénsecondepoort.
+Zie [plan-3-bewijs](plans/topo2-context/03-bewijs.md) voor resultaten en open poorten.
+
+
+Topo 2 plan 4 adds `tests/test_topo_v2_goals.py` and the black-box
+`e2e/test_topo_v2_goals_journey.py`: short source input, reservation versus linked
+value, unknown/zero, excess/value falls, legacy versions 1–6, source-bound joint
+preview, no-write/no-op, migration and export enrichment preservation. The
+benchmark includes 100 goals at both transaction scales; goal outcomes must remain
+identical after transaction changes. It also measures preview, effective update
+and no-op for 100 goal records at both scales. Full CLI latency, output bytes and own-process
+peak RSS remain measured. The existing 10k gate stays below one second; 100k is a
+scale profile. Mechanical tokens never establish human usage acceptance.
+
+
+## Topo 2-rapporten (plan 7)
+
+`tests/test_topo_v2_reports.py` controleert aansluiting op gedeelde berekeningen,
+onbekend/nul, valuta, selectie, escaping, één snapshot en veilige publicatie.
+`e2e/test_topo_v2_report_journey.py` vergelijkt echte HTML-cellen met afzonderlijke
+CLI-uitkomsten, leest oude opslagversies zonder migratie, bewaakt contextbytes/mtime
+en herhaalt de synthetische bron-/herimportjourney zonder extra inventarisatie.
+Testtokens zijn uitsluitend mechanisch bewijs; menselijke gebruikspoorten blijven open.
+
+De bestaande benchmark bevat report_all en report_bounded binnen dezelfde 10k-poort.
+`measurements` bevat volledige procesduur, stdout_bytes, html_bytes en piek-RSS.
+`report_phases` meet read_validation_seconds, calculation_seconds en rendering_seconds
+in een afzonderlijk diagnostisch proces; diens RSS is cumulatief, geen afzonderlijke
+geheugenpiek per fase. Beide routes moeten exact dezelfde HTML-bytes/hash produceren
+als de overeenkomstige volledige CLI-run. 100k blijft schaalprofiel zonder nieuwe
+harde tijdgrens. Voer benchmarks achtereenvolgens zonder tests tegelijk uit.
+
+Visueel bewijs gebruikt uitsluitend synthetische lege/minimale/rijke rapporten op
+1440 en 390 pixels breed. Controleer initiële viewport, alle secties, lange tekst,
+clipping, leesbaarheid en afwezig netwerkverkeer. Lokale screenshots/ruwe logs staan
+buiten Git in test-results/topo2-reports; bevindingen staan in plan-7-bewijs.

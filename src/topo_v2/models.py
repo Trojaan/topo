@@ -106,8 +106,15 @@ class Goal(Model):
     target_amount: Annotated[Money, Field(gt=0)]
     currency: Currency = "EUR"
     target_date: date | None = None
+    reserved_amount: Annotated[Money, Field(ge=0)] | None = None
+    monthly_contribution: Annotated[Money, Field(ge=0)] | None = None
+    priority: Literal["low", "normal", "high"] | None = None
+    note: Label | None = None
     account_ids: list[Identifier] = Field(default_factory=list)
     asset_ids: list[Identifier] = Field(default_factory=list)
+
+
+TransactionKind = Literal["income", "expense", "internal_transfer", "unknown"]
 
 
 class Transaction(Model):
@@ -119,6 +126,7 @@ class Transaction(Model):
     description: str
     category: Label | None = None
     source: Label | None = None
+    kind: TransactionKind | None = None
 
 
 Domain = Literal["accounts", "assets", "debts", "goals", "cashflows"]
@@ -144,12 +152,64 @@ class TransactionCoverage(Model):
         return self
 
 
-Record = Account | Asset | Debt | Goal | Transaction | Inventory | TransactionCoverage
+class ExpectedRange(Model):
+    lower: Annotated[Money, Field(ge=0)]
+    upper: Annotated[Money, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def ordered_bounds(self) -> Self:
+        if self.lower > self.upper:
+            raise ValueError("lower must not exceed upper")
+        return self
+
+
+class Cashflow(Model):
+    id: Identifier
+    label: Label
+    kind: Literal["income", "expense"]
+    amount: Annotated[Money, Field(ge=0)] | ExpectedRange | None = None
+    currency: Currency = "EUR"
+    frequency: Literal["weekly", "four_weekly", "monthly", "quarterly", "yearly"]
+    start_date: date
+    end_date: date | None = None
+    category: Label | None = None
+    source: Label | None = None
+    debt_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def ordered_dates(self) -> Self:
+        if self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("end_date must not precede start_date")
+        return self
+
+
+class CashflowSettings(Model):
+    minimum_reserve: Annotated[Money, Field(ge=0)] | None = None
+    note: Label | None = None
+
+
+Record = (
+    Account
+    | Asset
+    | Debt
+    | Goal
+    | Transaction
+    | Inventory
+    | TransactionCoverage
+    | Cashflow
+    | CashflowSettings
+)
 
 
 class Context(Model):
     schema_version: Literal[
-        "topo2.context/1", "topo2.context/2", "topo2.context/3", "topo2.context/4"
+        "topo2.context/1",
+        "topo2.context/2",
+        "topo2.context/3",
+        "topo2.context/4",
+        "topo2.context/5",
+        "topo2.context/6",
+        "topo2.context/7",
     ] = SCHEMA_VERSION
     context_id: str
     accounts: list[Account] = Field(default_factory=list)
@@ -157,17 +217,28 @@ class Context(Model):
     debts: list[Debt] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
     transactions: list[Transaction] = Field(default_factory=list)
+    cashflows: list[Cashflow] = Field(default_factory=list)
+    cashflow_settings: dict[Currency, CashflowSettings] = Field(default_factory=dict)
 
     inventories: list[Inventory] = Field(default_factory=list)
     transaction_coverage: list[TransactionCoverage] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def references(self) -> Self:
-        if self.schema_version not in ("topo2.context/3", "topo2.context/4") and (
-            self.inventories or self.transaction_coverage
-        ):
+        if self.schema_version not in (
+            "topo2.context/3",
+            "topo2.context/4",
+            "topo2.context/5",
+            "topo2.context/6",
+            "topo2.context/7",
+        ) and (self.inventories or self.transaction_coverage):
             raise ValueError("Context declarations require topo2.context/3")
-        if self.schema_version != "topo2.context/4" and (
+        if self.schema_version not in (
+            "topo2.context/4",
+            "topo2.context/5",
+            "topo2.context/6",
+            "topo2.context/7",
+        ) and (
             self.debts
             or any(
                 record.availability is not None or record.availability_note is not None
@@ -175,6 +246,24 @@ class Context(Model):
             )
         ):
             raise ValueError("Debts and availability require topo2.context/4")
+        if self.schema_version not in (
+            "topo2.context/5",
+            "topo2.context/6",
+            "topo2.context/7",
+        ) and any(record.kind is not None for record in self.transactions):
+            raise ValueError("Transaction kinds require topo2.context/5")
+        if self.schema_version not in ("topo2.context/6", "topo2.context/7") and (
+            self.cashflows or self.cashflow_settings
+        ):
+            raise ValueError("Cashflows and settings require topo2.context/6")
+        if self.schema_version != "topo2.context/7" and any(
+            goal.reserved_amount is not None
+            or goal.monthly_contribution is not None
+            or goal.priority is not None
+            or goal.note is not None
+            for goal in self.goals
+        ):
+            raise ValueError("Goal enrichments require topo2.context/7")
         domains = [record.id for record in self.inventories]
         if len(domains) != len(set(domains)):
             raise ValueError("Inventory domains must be unique")
@@ -185,6 +274,7 @@ class Context(Model):
             + [goal.id for goal in self.goals]
             + [transaction.id for transaction in self.transactions]
             + [coverage.id for coverage in self.transaction_coverage]
+            + [cashflow.id for cashflow in self.cashflows]
         )
         if len(all_ids) != len(set(all_ids)):
             raise ValueError("Record IDs must be unique across the context")
@@ -227,6 +317,14 @@ class Context(Model):
                 or debt.as_of != account.as_of
             ):
                 raise ValueError(f"Debt {debt.id}: inconsistent overdraft account")
+        debts = {debt.id: debt for debt in self.debts}
+        for cashflow in self.cashflows:
+            if cashflow.debt_id is not None:
+                linked_debt = debts.get(cashflow.debt_id)
+                if linked_debt is None or linked_debt.currency != cashflow.currency:
+                    raise ValueError(
+                        f"Cashflow {cashflow.id}: debt must exist in the same currency"
+                    )
         for goal in self.goals:
             for refs, records in (
                 (goal.account_ids, accounts),
@@ -283,6 +381,12 @@ class CoverageChanges(Model):
     delete: list[Identifier] = Field(default_factory=list)
 
 
+class CashflowChanges(Model):
+    add: list[Cashflow] = Field(default_factory=list)
+    update: list[Cashflow] = Field(default_factory=list)
+    delete: list[Identifier] = Field(default_factory=list)
+
+
 class ChangeRequest(Model):
     contract_version: Literal["topo2.cli/3"] = CONTRACT_VERSION
     accounts: AccountChanges = Field(default_factory=AccountChanges)
@@ -292,6 +396,10 @@ class ChangeRequest(Model):
     transactions: TransactionChanges = Field(default_factory=TransactionChanges)
     inventories: InventoryChanges = Field(default_factory=InventoryChanges)
     transaction_coverage: CoverageChanges = Field(default_factory=CoverageChanges)
+    cashflows: CashflowChanges = Field(default_factory=CashflowChanges)
+    cashflow_settings: dict[Currency, CashflowSettings | None] = Field(
+        default_factory=dict
+    )
     confirmation_token: str | None = None
 
     @model_validator(mode="before")
@@ -314,6 +422,8 @@ class Difference(Model):
         "transactions",
         "inventories",
         "transaction_coverage",
+        "cashflows",
+        "cashflow_settings",
     ]
     id: str
     before: Record | None
@@ -333,6 +443,13 @@ class Subtotal(Model):
     complete: bool
 
 
+class GoalLinkedValue(Model):
+    known_amount: Decimal
+    percentage: Decimal
+    missing_ids: list[str]
+    complete: bool
+
+
 class GoalProgress(Model):
     id: str
     name: str
@@ -343,6 +460,12 @@ class GoalProgress(Model):
     missing_ids: list[str]
     complete: bool
     target_date: date | None
+    reserved_amount: Decimal | None
+    monthly_contribution: Decimal | None
+    priority: Literal["low", "normal", "high"] | None
+    note: str | None
+    remaining_amount: Decimal | None
+    linked_value: GoalLinkedValue
 
 
 class InventoryState(Model):
@@ -371,12 +494,26 @@ class AvailabilitySubtotal(Model):
     missing_ids: list[str]
 
 
+class ReservationComparison(Model):
+    currency: str
+    goal_ids: list[str]
+    known_reserved_total: Decimal
+    unknown_reservation_ids: list[str]
+    known_free_total: Decimal | None
+    missing_value_ids: list[str]
+    unknown_availability_ids: list[str]
+    inventories: list[InventoryState]
+    possible_excess: bool | None
+    coverage_unknown: bool
+
+
 class Summary(Model):
     kind: Literal["wealth_overview"] = "wealth_overview"
     subtotals: list[Subtotal]
     goals: list[GoalProgress]
     net_wealth: NetWealth
     availability: list[AvailabilitySubtotal]
+    reservation_comparison: list[ReservationComparison]
 
 
 class TransactionImportOptions(Model):
@@ -396,7 +533,7 @@ class TransactionImportResult(Model):
     changes: list[Difference]
 
 
-class TransactionQuery(Model):
+class TransactionFilters(Model):
     account_id: Identifier | None = None
     from_date: date | None = None
     to_date: date | None = None
@@ -405,8 +542,6 @@ class TransactionQuery(Model):
     min_amount: Money | None = None
     max_amount: Money | None = None
     search: str | None = None
-    offset: Annotated[int, Field(ge=0)] = 0
-    limit: Annotated[int, Field(ge=1, le=1000)] = 100
 
     @model_validator(mode="after")
     def valid_ranges(self) -> Self:
@@ -423,6 +558,11 @@ class TransactionQuery(Model):
         ):
             raise ValueError("min_amount must not exceed max_amount")
         return self
+
+
+class TransactionQuery(TransactionFilters):
+    offset: Annotated[int, Field(ge=0)] = 0
+    limit: Annotated[int, Field(ge=1, le=1000)] = 100
 
 
 class TransactionQueryResult(Model):
@@ -479,15 +619,102 @@ class Limitation(Model):
     ids: list[str]
 
 
+class MonthlyRoomQuery(Model):
+    reference_date: date
+
+
+class MonthlyBand(Model):
+    lower: Decimal
+    upper: Decimal
+
+
+class NormalizedCashflow(Model):
+    id: str
+    kind: Literal["income", "expense"]
+    monthly_amount: MonthlyBand | None
+
+
+class MonthlyCurrency(Model):
+    currency: str
+    records: list[NormalizedCashflow]
+    known_income: MonthlyBand
+    known_expenses: MonthlyBand
+    known_room: MonthlyBand
+    missing_ids: list[str]
+    complete: bool
+    room: MonthlyBand | None
+    minimum_reserve: Decimal | None
+    note: str | None
+
+
+class MonthlyRoom(Model):
+    reference_date: date
+    inventory: InventoryState
+    currencies: list[MonthlyCurrency]
+    limitations: list[Limitation]
+
+
 class CompactContext(Model):
     context_id: str
     accounts: list[Account]
     assets: list[Asset]
     debts: list[Debt]
     goals: list[Goal]
+    cashflows: list[Cashflow]
+    cashflow_settings: dict[Currency, CashflowSettings]
+    monthly_room: MonthlyRoom | None
     summary: Summary
     inventories: list[InventoryState]
     transaction_coverage: list[CoverageState]
     age_policy: ContextQuery
     value_age: list[ValueAge]
     limitations: list[Limitation]
+
+
+class TransactionAggregateQuery(TransactionFilters):
+    group_by: list[Literal["month", "category"]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_groups(self) -> Self:
+        if len(self.group_by) != len(set(self.group_by)):
+            raise ValueError("group_by dimensions must be unique")
+        return self
+
+
+class Movement(Model):
+    count: int = 0
+    receipts: Decimal = Decimal(0)
+    outflows: Decimal = Decimal(0)
+    net_movement: Decimal = Decimal(0)
+
+
+class TransactionTotals(Movement):
+    currency: str
+    income: Decimal = Decimal(0)
+    expenses: Decimal = Decimal(0)
+    classified_net_cashflow: Decimal = Decimal(0)
+    classified_count: int = 0
+    unknown_count: int = 0
+    classification_complete: bool | None = None
+    internal_transfers: Movement = Field(default_factory=Movement)
+    unknown: Movement = Field(default_factory=Movement)
+
+
+class TransactionGroup(TransactionTotals):
+    month: str | None = None
+    category: str | None = None
+
+
+class AggregateCoverage(Model):
+    account_id: str
+    status: Literal["complete", "partial", "unknown", "declared"]
+    intervals: list[TransactionCoverage]
+
+
+class TransactionAggregateResult(Model):
+    filters: TransactionAggregateQuery
+    count: int
+    classification_complete: bool | None
+    totals: list[TransactionTotals]
+    groups: list[TransactionGroup]
+    coverage: list[AggregateCoverage]

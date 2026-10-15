@@ -35,7 +35,45 @@ as `topo2`. Read `docs/topo2.md` for its records, CLI and agent confirmation flo
 Topo 2 never imports the old engine and overwrites only its own current JSON
 context after one explicitly human-approved preview. Transactions are ordinary
 records: use import-transactions and filtered/paginated transactions queries.
-They never adjust stored balances. The agent performs transaction analyses.
+They never adjust stored balances. Use aggregate-transactions for compact realized totals, and filtered transactions
+for details. Optional transaction kind is explicit human-approved meaning, never
+inferred by the engine. Signed refunds reduce expenses; transfers and unknowns
+remain separate from classified economic cashflow. A transfer half proves no pair.
+Coverage declarations and classification completeness are independent. Import
+preserves omitted kind/category/source; JSON null clears. Keep at most three short
+clarification bundles and one joint human confirmation per coherent change.
+Mechanical test tokens never count as human approval.
+For monthly questions, use aggregate-transactions to prepare a few explicit cashflows,
+not a second spending ledger. Frequency/ranges require source support or clarification;
+a short export proves no recurrence. Document the selection behind a combined expense
+and exclude separately recorded costs from it. Internal transfers are not consumption;
+never deduct goal contributions twice. monthly-room uses only expectations at an
+explicit reference date. Discuss known_room.lower as cautious room among known items,
+with missing amounts and inventory visible; never assume a range midpoint.
+Optional cashflow_settings hold a minimum balance reserve per currency and a free note;
+the reserve is not deducted monthly. Imports preserve expectations/settings; transactions
+never rewrite expectations, debts or balances. Plan 6's human usage gate remains open;
+technical authorization does not confirm classifications or expectations.
+Goals accept a short message without inventory, allocation or preference questions.
+Optional reserved_amount is a confirmed destination, never proof of funds or exclusivity.
+remaining_amount uses only explicit reserved_amount; missing is unknown, explicit zero
+is known. Legacy linked_value stays separate and is never added to the reservation.
+monthly_contribution is intention only; no payment or second monthly deduction.
+priority low/normal/high and note are optional, not allocation rules. Preserve goal
+enrichments on full updates and export reimports. reservation_comparison compares
+known destinations per currency with known free value; possible excess and unknown
+coverage never block goals or value falls and never prove joint/exclusive coverage.
+minimum_reserve remains a separate balance threshold. No required contribution,
+achievement month or joint feasibility yet. Human usage gates for plans 3 and 6
+remain open; technical implementation confirms no financial facts or intentions.
+Use report with an explicit output path and reference date for early offline HTML
+insight, without financial confirmation or mandatory inventory questions. Optional
+from-date/to-date are supplied together; omitted means all stored transactions,
+never inferred period coverage. Report reads one snapshot and changes no context;
+keep reports outside Git. Reuse shared outcomes: realized totals and expectations,
+legacy linked value and goal reservations, and minimum reserve stay separate.
+Never deduct goal contributions again or claim joint/exclusive coverage.
+Human usage gates for plans 3, 4 and 6 remain open; report generation confirms no facts.
 Topo 2 has no mutation history or proposals; transaction records from prior
 years remain available. Always use synthetic fixtures and keep personal contexts
 outside Git.

@@ -114,12 +114,64 @@ def main() -> int:
                 )
     # Topo 2 has its own boundary: no legacy imports, no orchestration inward.
     v2_forbidden = {
-        "models": {"cli", "engine", "storage", "reading"},
-        "storage": {"cli", "engine", "reading"},
+        "models": {"cli", "engine", "storage", "reading", "cashflows", "goals"},
+        "storage": {"cli", "engine", "reading", "cashflows", "goals"},
         "engine": {"cli", "reading"},
+        "goals": {"cli", "engine", "storage", "reading", "transactions", "cashflows"},
+        "cashflows": {"cli", "engine", "storage", "reading", "transactions"},
         "transactions": {"cli", "engine", "storage", "reading"},
         "reading": {"cli", "storage"},
     }
+    report_modules = {"reports", "report_models", "report_html", "report_files"}
+    for source in (
+        "models",
+        "storage",
+        "engine",
+        "goals",
+        "cashflows",
+        "transactions",
+        "reading",
+    ):
+        v2_forbidden.setdefault(source, set()).update(report_modules)
+    v2_forbidden.update(
+        {
+            "report_models": {
+                "cli",
+                "storage",
+                "engine",
+                "reading",
+                "cashflows",
+                "goals",
+                "transactions",
+                "reports",
+                "report_html",
+                "report_files",
+            },
+            "reports": {"cli", "storage", "report_html", "report_files"},
+            "report_html": {
+                "cli",
+                "storage",
+                "engine",
+                "reading",
+                "cashflows",
+                "goals",
+                "transactions",
+                "reports",
+                "report_files",
+            },
+            "report_files": {
+                "cli",
+                "storage",
+                "engine",
+                "reading",
+                "cashflows",
+                "goals",
+                "transactions",
+                "reports",
+                "report_html",
+            },
+        }
+    )
     for path in sorted((ROOT / "src" / "topo_v2").glob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):

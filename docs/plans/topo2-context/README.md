@@ -1,8 +1,15 @@
 # Topo 2: snel van bronnen naar bruikbaar inzicht
 
-Status: plannen 0, 1 en 2 technisch geleverd; de menselijke gebruiksbevestiging staat
-nog open. Zie [bewijs plan 0](00-bewijs.md) en [bewijs plan 1](01-bewijs.md).
-Zie ook [bewijs plan 2](02-bewijs.md). Plannen 3–9 zijn niet geïmplementeerd.
+Status: plannen 0, 1 en 2 technisch en voor de uitgevoerde synthetische
+basisjourney in gebruik geleverd; zie [extern bewijs](gebruik-bewijs-00-02.md).
+Herstelstappen en beperkingen blijven onderdeel van dat bewijs. Plan 6 is [technisch geleverd](06-bewijs.md), met een nog open nieuwe menselijke
+gebruikspoort. Plan 3 is [technisch geleverd](03-bewijs.md); menselijke gebruiksacceptatie
+blijft open. Plan 4 is [technisch geleverd](04-bewijs.md), met menselijke gebruiksacceptatie nog open.
+De volledige verify-run blijft geblokkeerd door bestaande lintfouten. De gebruiker heeft technische uitvoering expliciet toegestaan ondanks
+de open menselijke poorten van plannen 3, 4 en 6. Die blijven expliciet open;
+de opdracht bevestigt geen financiële feiten, reserveringen of verwachtingen.
+Plan 7 levert de lokale HTML-rapportlaag; zie [bewijs](07-bewijs.md).
+Plannen 5, 8 en 9 zijn niet geïmplementeerd.
 
 Doel: met transacties, screenshots en weinig aanvullende input snel voldoende
 actuele context opbouwen om samen met een agent financiële vragen en doelen te
@@ -40,7 +47,7 @@ uitvoervolgorde. Plan 0 loopt als gebruiksjourney mee met iedere uitbreiding.
 | [0 — Van bronnen naar eerste context](00-invoer.md) | — | Werkende invoerjourney, hergebruik en behoud bij herimport |
 | [1 — Compact lezen en gerichte onzekerheid](01-context.md) | 0 als gebruiksgrens | Snel lezen; gedeeltelijke context blijft bruikbaar |
 | [2 — Eenvoudige schulden en vermogen](02-vermogen.md) | 1 | Eerste nettovermogensbeeld zonder uitgebreide inventarisatie |
-| [7 — Meegroeiende rapportlaag](07-rapportages.md) | 1; verdere gegevens optioneel | Vroege financiële foto, later maandbeeld en doelen |
+| [7 — Meegroeiende rapportlaag](07-rapportages.md) | 1; verdere gegevens optioneel | Financiële foto, afzonderlijk maandbeeld en doelen; technisch geleverd |
 | [6 — Transactiebetekenis en aggregaties](06-transacties.md) | 0, 1 | Controleerbare totalen met door de agent voorbereide classificaties |
 | [3 — Voorlopig structureel maandbeeld](03-geldstromen.md) | 0, 1, 6 | Alleen relevante terugkerende verwachtingen vastleggen |
 | [4 — Eenvoudige doelen](04-doelen.md) | 1 | Doelbedrag, datum, optioneel gereserveerd bedrag en maandinleg |

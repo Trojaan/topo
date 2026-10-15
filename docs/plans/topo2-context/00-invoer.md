@@ -1,8 +1,9 @@
 # Plan 0 — Van bronnen naar een bruikbare eerste context
 
-Status: technisch geleverd op 2026-10-14; de menselijke bevestiging voor de
-gebruiksjourney staat nog open. Afhankelijkheden: geen. Dit plan bepaalt de
-gebruiksgrens voor alle volgende plannen.
+Status: technisch en voor de uitgevoerde synthetische basisjourney in gebruik
+geleverd. Zie [extern gebruiksbewijs 0–2](gebruik-bewijs-00-02.md), inclusief
+herstelstappen, beperkte tijdmeting en niet uitgevoerde optionele proeven.
+
 
 Levering: `topo2.cli/3`, behoud van verrijkingen bij import, expliciet wissen via
 JSON null, brongebonden gezamenlijke wijzigingen en identieke updates zonder

@@ -9,10 +9,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from topo_v2 import storage
+from topo_v2.goals import goal_summary
 from topo_v2.models import (
     Account,
     Asset,
     AvailabilitySubtotal,
+    Cashflow,
     ChangeRequest,
     ChangeResult,
     Context,
@@ -20,7 +22,6 @@ from topo_v2.models import (
     Difference,
     Domain,
     Goal,
-    GoalProgress,
     Inventory,
     InventoryState,
     NetWealth,
@@ -53,7 +54,16 @@ def initialize(path: Path) -> Context:
 
 
 def _apply[
-    T: (Account, Asset, Debt, Goal, Transaction, Inventory, TransactionCoverage)
+    T: (
+        Account,
+        Asset,
+        Debt,
+        Goal,
+        Transaction,
+        Inventory,
+        TransactionCoverage,
+        Cashflow,
+    )
 ](records: list[T], add: list[T], update: list[T], delete: Sequence[str]) -> list[T]:
     touched = [record.id for record in [*add, *update]] + list(delete)
     if len(touched) != len(set(touched)):
@@ -90,8 +100,40 @@ def _check_token(provided: str | None, expected: str) -> None:
 
 
 def _changed_context(before: Context, request: ChangeRequest) -> Context:
+    settings = dict(before.cashflow_settings)
+    for currency, value in request.cashflow_settings.items():
+        if value is None:
+            settings.pop(currency, None)
+        else:
+            settings[currency] = value
     return Context(
-        schema_version="topo2.context/4"
+        schema_version="topo2.context/7"
+        if (
+            before.schema_version == "topo2.context/7"
+            or any(
+                goal.reserved_amount is not None
+                or goal.monthly_contribution is not None
+                or goal.priority is not None
+                or goal.note is not None
+                for goal in [*request.goals.add, *request.goals.update]
+            )
+        )
+        else "topo2.context/6"
+        if (
+            before.schema_version == "topo2.context/6"
+            or request.cashflows.add
+            or request.cashflows.update
+            or settings
+        )
+        else "topo2.context/5"
+        if (
+            before.schema_version == "topo2.context/5"
+            or any(
+                record.kind is not None
+                for record in [*request.transactions.add, *request.transactions.update]
+            )
+        )
+        else "topo2.context/4"
         if (
             before.schema_version == "topo2.context/4"
             or request.debts.add
@@ -116,6 +158,13 @@ def _changed_context(before: Context, request: ChangeRequest) -> Context:
         )
         else "topo2.context/2",
         context_id=before.context_id,
+        cashflows=_apply(
+            before.cashflows,
+            request.cashflows.add,
+            request.cashflows.update,
+            request.cashflows.delete,
+        ),
+        cashflow_settings=settings,
         inventories=_apply(
             before.inventories,
             request.inventories.add,
@@ -165,6 +214,7 @@ def _differences(before: Context, after: Context) -> list[Difference]:
         "transactions",
         "inventories",
         "transaction_coverage",
+        "cashflows",
     ):
         old = {record.id: record for record in getattr(before, section)}
         new = {record.id: record for record in getattr(after, section)}
@@ -178,6 +228,20 @@ def _differences(before: Context, after: Context) -> list[Difference]:
                         after=new.get(identifier),
                     )
                 )
+    for currency in sorted(
+        before.cashflow_settings.keys() | after.cashflow_settings.keys()
+    ):
+        old_setting = before.cashflow_settings.get(currency)
+        new_setting = after.cashflow_settings.get(currency)
+        if old_setting != new_setting:
+            differences.append(
+                Difference(
+                    section="cashflow_settings",
+                    id=currency,
+                    before=old_setting,
+                    after=new_setting,
+                )
+            )
     return differences
 
 
@@ -207,17 +271,21 @@ def change(
         after = _changed_context(before, request)
         differences = _differences(before, after)
         if not differences:
-            if not any(
-                section.add or section.update or section.delete
-                for section in (
-                    request.accounts,
-                    request.assets,
-                    request.debts,
-                    request.goals,
-                    request.transactions,
-                    request.inventories,
-                    request.transaction_coverage,
+            if (
+                not any(
+                    section.add or section.update or section.delete
+                    for section in (
+                        request.accounts,
+                        request.assets,
+                        request.debts,
+                        request.goals,
+                        request.transactions,
+                        request.inventories,
+                        request.transaction_coverage,
+                        request.cashflows,
+                    )
                 )
+                and not request.cashflow_settings
             ):
                 raise ChangeError("Request contains no operations")
             return ChangeResult(status="unchanged", confirmation_token=None, changes=[])
@@ -284,31 +352,16 @@ def summarize(context: Context) -> Summary:
                     complete=not missing,
                 )
             )
-        goals: list[GoalProgress] = []
-        for goal in context.goals:
-            ids = list(dict.fromkeys([*goal.account_ids, *goal.asset_ids]))
-            missing = [identifier for identifier in ids if amounts[identifier] is None]
-            total = sum(
-                (amounts[identifier] or Decimal(0) for identifier in ids), Decimal(0)
-            )
-            goals.append(
-                GoalProgress(
-                    id=goal.id,
-                    name=goal.name,
-                    currency=goal.currency,
-                    target_amount=goal.target_amount,
-                    known_amount=total,
-                    percentage=total / goal.target_amount * 100,
-                    missing_ids=missing,
-                    complete=not missing,
-                    target_date=goal.target_date,
-                )
-            )
+        availability = _availability(context)
+        goals, comparisons = goal_summary(
+            context.goals, amounts, availability, context.inventories
+        )
         return Summary(
             subtotals=subtotals,
             goals=goals,
             net_wealth=_net_wealth(context, subtotals),
-            availability=_availability(context),
+            availability=availability,
+            reservation_comparison=comparisons,
         )
 
 

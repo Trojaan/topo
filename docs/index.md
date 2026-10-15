@@ -6,7 +6,7 @@ these pages hold the detail.
 | Topic | Document |
 | --- | --- |
 | Eenvoudige actuele toestand, topo2 en bevestiging | [Topo 2](topo2.md) |
-| Geplande uitbreiding van context, doelen en rapportages | [Topo 2-deelplannen](plans/topo2-context/README.md) |
+| Contextuitbreidingen, geleverde rapportage en vervolgplannen | [Topo 2-deelplannen](plans/topo2-context/README.md) |
 | Beschikbare functies en uitvoerbare workflows | [Capabilities](capabilities.md) |
 | Runtime structure, data flow, dependency boundaries | [Architecture](architecture.md) |
 | Begeleide technische rondleiding door de architectuur | [Architecture tour](architecture-tour.md) |

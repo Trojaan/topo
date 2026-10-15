@@ -1,0 +1,5 @@
+Uitsluitend synthetische oefenbron, geen menselijke financiële bevestiging.
+Voor het bestaande bufferdoel van EUR 10.000 op 2027-12-31:
+EUR 4.000 expliciet bestemd, voorgenomen maandinleg EUR 200.
+Prioriteit high, toelichting: Buffer voor onderhoud.
+De bestaande spaarrekeningkoppeling blijft gekoppelde waarde, geen reservering.

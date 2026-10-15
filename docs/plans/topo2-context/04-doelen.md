@@ -1,6 +1,7 @@
 # Plan 4 — Eenvoudige doelen
 
-Status: voorgesteld. Vereist: plan 1. Schulden, geldstromen en gedetailleerde
+Status: [technisch geleverd](04-bewijs.md); menselijke gebruiksacceptatie open.
+Vereist: plan 1. Schulden, geldstromen en gedetailleerde
 vermogensverdeling zijn geen voorwaarde om een doel vast te leggen.
 
 ## Resultaat
@@ -51,3 +52,37 @@ doelplanning zijn uitgesteld naar plan 9.
 
 Toewijzingen per vermogenspost, automatische verdeling, harde reserveringen,
 beleggingsadvies, gezamenlijke haalbaarheid en scenario's.
+
+## Vastgelegde ontwerpbesluiten (2026-10-15, vóór implementatie)
+
+- target_amount blijft positief; reserved_amount en monthly_contribution zijn
+  optionele niet-negatieve Decimal-bedragen, inclusief expliciete nul. Bestaande
+  geldgrenzen gelden: maximaal 28 cijfers en acht decimalen. Geen bovengrens
+  ten opzichte van doel of vermogen. Afwezig/null blijft onbekend.
+- priority is optioneel low/normal/high: uitsluitend menselijke rangorde,
+  zonder automatische verdeling of berekening. note is optionele vrije tekst
+  van maximaal 256 tekens, geen rekenregel.
+- remaining_amount is max(target_amount - reserved_amount, 0), uitsluitend
+  wanneer reserved_amount bekend is. Overreservering blijft zichtbaar in het
+  opgeslagen bedrag. Geen impliciete nulaanname; expliciet nul is bekend nul.
+- Oude koppelingen blijven afzonderlijke linked_value. De bestaande known_amount,
+  percentage, missing_ids en complete blijven compatibele gekoppelde-waardevelden.
+  Koppelingen tellen nooit bij reserveringen of remaining_amount op.
+- reservation_comparison vergelijkt per doelvaluta known_reserved_total met het
+  bestaande known_free_total. Zonder vermogensrecords in die valuta is dat null.
+  possible_excess is null zonder vergelijking, anders de vergelijking >.
+  coverage_unknown is onafhankelijk en waar bij ontbrekende reserveringen,
+  middelenwaarden/beschikbaarheid of onvolledige accounts/assets/goals-inventaris.
+  Beide signalen kunnen tegelijk bestaan. Inventarissen en ontbrekende IDs blijven
+  zichtbaar. Ook zonder hiaten is dit nooit bewijs van gezamenlijke of exclusieve
+  dekking. Schulden worden niet opnieuw afgetrokken. Minimumreserve blijft een
+  afzonderlijke saldodrempel; geen verrekening met doelreserveringen.
+- Maandinleg is opgeslagen intentie, zonder betaling, saldo-/schuldmutatie of
+  tweede aftrek in monthly-room. Geen benodigde inleg, haalmaand of haalbaarheid.
+- CLI blijft additief topo2.cli/3. Niet-null verrijkingen (ook nul) vereisen
+  context/7. Versies 1–6 blijven leesbaar; preview/no-op migreren niet. Versie 7
+  blijft behouden na wissen. Oude opslagversies krijgen geen verrijkingsvelden.
+- Eén bestaande gezamenlijke preview/bevestiging; geen verplichte inventarisatie,
+  verdeling of voorkeurenvragen. Ambigue datums worden niet verzonnen.
+  Technische autorisatie bevestigt geen financiële gegevens. De menselijke
+  gebruikspoorten van plannen 3 en 6 blijven open.
