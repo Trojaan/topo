@@ -1,6 +1,12 @@
 # Plan 6 — Transactiebetekenis en aggregaties
 
-Status: voorgesteld. Vereist: plannen 0 en 1.
+Status: technisch geleverd; nieuwe menselijke gebruikspoort open. Vereist:
+plannen 0 en 1 zijn voor de uitgevoerde basisjourney geleverd. Zie
+[levering en bewijs](06-bewijs.md) en [extern bewijs 0–2](gebruik-bewijs-00-02.md).
+
+Besloten vóór implementatie: gesigneerde correcties. Positieve expense verlaagt
+uitgaven, negatieve income verlaagt inkomsten. Rekeningbewegingen, economische
+subtotalen, transfers en onbekenden blijven afzonderlijk. Zie bewijs en docs/topo2.md.
 
 ## Resultaat
 

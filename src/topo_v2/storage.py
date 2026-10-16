@@ -60,12 +60,24 @@ def save(path: Path, context: Context) -> None:
         {
             **context.model_dump(),
             "schema_version": context.schema_version
-            if context.schema_version in ("topo2.context/3", "topo2.context/4")
+            if context.schema_version
+            in (
+                "topo2.context/3",
+                "topo2.context/4",
+                "topo2.context/5",
+                "topo2.context/6",
+                "topo2.context/7",
+            )
             else "topo2.context/2",
         }
     )
     excluded: dict[str, Any] = {}
-    if context.schema_version != "topo2.context/4":
+    if context.schema_version not in (
+        "topo2.context/4",
+        "topo2.context/5",
+        "topo2.context/6",
+        "topo2.context/7",
+    ):
         excluded = {
             "debts": True,
             "accounts": {"__all__": {"availability", "availability_note"}},
@@ -73,6 +85,18 @@ def save(path: Path, context: Context) -> None:
         }
     if context.schema_version == "topo2.context/2":
         excluded.update({"inventories": True, "transaction_coverage": True})
+    if context.schema_version not in (
+        "topo2.context/5",
+        "topo2.context/6",
+        "topo2.context/7",
+    ):
+        excluded["transactions"] = {"__all__": {"kind"}}
+    if context.schema_version not in ("topo2.context/6", "topo2.context/7"):
+        excluded.update({"cashflows": True, "cashflow_settings": True})
+    if context.schema_version != "topo2.context/7":
+        excluded["goals"] = {
+            "__all__": {"reserved_amount", "monthly_contribution", "priority", "note"}
+        }
     payload = context.model_dump_json(indent=2, exclude=excluded) + "\n"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from topo_v2 import engine, storage
+from topo_v2.cashflows import monthly_room
 from topo_v2.models import (
     CONTRACT_VERSION,
     ChangeRequest,
@@ -17,14 +18,26 @@ from topo_v2.models import (
     CompactContext,
     Context,
     ContextQuery,
+    MonthlyRoom,
+    MonthlyRoomQuery,
     Summary,
+    TransactionAggregateQuery,
+    TransactionAggregateResult,
     TransactionImportOptions,
     TransactionImportResult,
     TransactionQuery,
     TransactionQueryResult,
 )
 from topo_v2.reading import read_context
-from topo_v2.transactions import TRANSACTIONS, select_transactions
+from topo_v2.report_files import publish_report
+from topo_v2.report_html import render_report
+from topo_v2.report_models import ReportRequest, ReportResult
+from topo_v2.reports import build_report
+from topo_v2.transactions import (
+    TRANSACTIONS,
+    aggregate_transactions,
+    select_transactions,
+)
 
 
 def contract(command: str | None = None) -> dict[str, Any]:
@@ -50,17 +63,32 @@ def contract(command: str | None = None) -> dict[str, Any]:
                 },
             },
         },
+        "report": {
+            "description": "Offline HTML from one snapshot; explicit output/date; never overwrites. No period selects all stored transactions without claiming coverage.",
+            "input": ReportRequest.model_json_schema(),
+            "output": ReportResult.model_json_schema(mode="serialization"),
+        },
         "summary": {"output": Summary.model_json_schema(mode="serialization")},
+        "monthly-room": {
+            "input": MonthlyRoomQuery.model_json_schema(),
+            "output": MonthlyRoom.model_json_schema(mode="serialization"),
+        },
         "import-transactions": {
             "description": (
-                "Upsert by stable ID. Omitted category/source and empty optional CSV "
-                "cells preserve existing labels; JSON null clears, supplied labels "
+                "Upsert by stable ID. Omitted category/source/kind and empty optional CSV "
+                "cells preserve existing enrichments; JSON null clears, supplied labels "
                 "replace. Other fields are required. change.update still replaces "
                 "complete records. Identical effective imports do not write."
             ),
             "input": TRANSACTIONS.json_schema(),
             "options": TransactionImportOptions.model_json_schema(),
             "output": TransactionImportResult.model_json_schema(mode="serialization"),
+        },
+        "aggregate-transactions": {
+            "input": TransactionAggregateQuery.model_json_schema(),
+            "output": TransactionAggregateResult.model_json_schema(
+                mode="serialization"
+            ),
         },
         "transactions": {
             "input": TransactionQuery.model_json_schema(),
@@ -90,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         "contract",
         "import-transactions",
         "transactions",
+        "aggregate-transactions",
+        "monthly-room",
+        "report",
     )
     for name in command_names:
         command = commands.add_parser(name)
@@ -104,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             command.add_argument("--context", type=Path, default=Path("context.json"))
+        if name == "report":
+            command.add_argument("--output", required=True)
+            command.add_argument("--from-date")
+            command.add_argument("--to-date")
+        if name in ("monthly-room", "report"):
+            command.add_argument("--reference-date", required=True)
         if name == "context":
             command.add_argument("--reference-date")
             command.add_argument("--max-age-days", type=int)
@@ -123,7 +160,11 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--format", choices=["json", "csv"], required=True)
             command.add_argument("--confirmation-token")
             command.add_argument("--details", action="store_true")
-        if name == "transactions":
+        if name == "aggregate-transactions":
+            command.add_argument(
+                "--group-by", choices=["month", "category"], action="append", default=[]
+            )
+        if name in ("transactions", "aggregate-transactions"):
             command.add_argument("--account", dest="account_id")
             command.add_argument("--from-date")
             command.add_argument("--to-date")
@@ -132,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--min-amount")
             command.add_argument("--max-amount")
             command.add_argument("--search")
+        if name == "transactions":
             command.add_argument(
                 "--offset",
                 type=int,
@@ -149,6 +191,20 @@ def main(argv: list[str] | None = None) -> int:
             result = contract(args.schema)
         elif args.command == "init":
             result = engine.initialize(args.context)
+        elif args.command == "report":
+            report_request = ReportRequest.model_validate(
+                {key: getattr(args, key) for key in ReportRequest.model_fields}
+            )
+            raw, context = storage.read(args.context)
+            report_data = build_report(context, raw, report_request)
+            html_payload = render_report(report_data).encode("utf-8")
+            output_path = Path(report_request.output).absolute()
+            publish_report(output_path, html_payload)
+            result = ReportResult(
+                output=str(output_path),
+                html_bytes=len(html_payload),
+                metadata=report_data.metadata,
+            )
         elif args.command == "show":
             result = storage.read(args.context)[1]
         elif args.command == "context":
@@ -159,8 +215,32 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             result = read_context(storage.read(args.context)[1], query_context)
+        elif args.command == "monthly-room":
+            monthly_query = MonthlyRoomQuery.model_validate(
+                {"reference_date": args.reference_date}
+            )
+            context = storage.read(args.context)[1]
+            result = monthly_room(
+                context.cashflows,
+                context.cashflow_settings,
+                next(
+                    (item for item in context.inventories if item.id == "cashflows"),
+                    None,
+                ),
+                monthly_query.reference_date,
+            )
         elif args.command == "summary":
             result = engine.summarize(storage.read(args.context)[1])
+        elif args.command == "aggregate-transactions":
+            aggregate_query = TransactionAggregateQuery.model_validate(
+                {
+                    key: getattr(args, key)
+                    for key in TransactionAggregateQuery.model_fields
+                }
+            )
+            result = aggregate_transactions(
+                storage.read(args.context)[1], aggregate_query
+            )
         elif args.command == "transactions":
             query = TransactionQuery.model_validate(
                 {key: getattr(args, key) for key in TransactionQuery.model_fields}

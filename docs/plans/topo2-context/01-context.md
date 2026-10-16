@@ -1,8 +1,9 @@
 # Plan 1 — Compact lezen en gerichte onzekerheid
 
-Status: technisch geleverd; menselijke gebruikspoort nog open.
-Afhankelijkheid: plan 0 als gebruiksgrens; diens menselijke bevestiging is niet ontvangen.
-Zie [levering, bewijs en beperkingen](01-bewijs.md).
+Status: technisch en voor de uitgevoerde synthetische basisjourney in gebruik
+geleverd. Zie [extern gebruiksbewijs 0–2](gebruik-bewijs-00-02.md), inclusief
+herstelstappen, beperkte tijdmeting en niet uitgevoerde optionele proeven.
+
 
 ## Resultaat
 

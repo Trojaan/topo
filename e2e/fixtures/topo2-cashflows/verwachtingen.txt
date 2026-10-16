@@ -1,0 +1,27 @@
+Uitsluitend synthetische oefenbron, referentiedatum 2026-10-14.
+Vraag: bereid uit de oorspronkelijke export en deze toelichting een voorlopig
+structureel maandbeeld voor; geen volledige inventarisatie.
+
+Het exportbedrag van het salaris (EUR 3.000) wordt elke vier weken verwacht.
+De supermarktbetaling van EUR 85,50 ondersteunt een voorlopige band van EUR 80–120
+per week voor samengevoegde boodschappen. Die band is hier expliciet opgegeven;
+één aankoop bewijst geen frequentie of complete categorie.
+Deze boodschappenpost omvat uitsluitend supermarktuitgaven. Hij bevat geen
+hypotheekbetaling, verzekering of kwartaalabonnement. Deze drie staan apart:
+- hypotheekbetaling EUR 900 per maand, gekoppeld aan hypotheek mortgage;
+- verzekering EUR 1.200 per jaar;
+- abonnement EUR 75 per kwartaal.
+De maandbetaling op unknown_loan is onbekend; de schuldstand blijft ook onbekend.
+Een extra USD-inkomen van 50 per maand blijft apart; geen omrekening.
+Een oude maandlast EUR 1.000 eindigde op 2026-10-13.
+Een nieuwe maandlast EUR 1.000 begint pas op 2026-10-15.
+Andere verwachtingen beginnen voor dit voorlopige beeld op de referentiedatum;
+dit beweert geen historische start. De inventaris blijft gedeeltelijk.
+Minimumreserve EUR 5.000 is een aan te houden saldo, geen maandelijkse inhouding.
+Toelichting: boodschappen zijn flexibel; de buffer heeft prioriteit.
+Extra sparen is expliciet vrij beschikbaar; de woning is beperkt beschikbaar.
+De overboekingen tussen SYN-BETAAL en SYN-SPAAR zijn eigen overboekingen.
+Het bestaande bufferdoel en zijn inleg leveren geen tweede uitgavenpost op.
+
+Dit is bronmateriaal voor voorbereiding. Geen menselijke bevestiging wordt
+hiermee gesimuleerd of gegeven. Alle interpretaties horen in één gezamenlijke preview.

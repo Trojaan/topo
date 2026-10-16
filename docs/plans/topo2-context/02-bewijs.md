@@ -1,5 +1,14 @@
 # Plan 2 — Levering en bewijs
 
+## Actuele status na extern gebruiksbewijs
+
+Techniek en de uitgevoerde synthetische basisjourney zijn geleverd. Zie
+[extern gebruiksbewijs 0–2](gebruik-bewijs-00-02.md) voor de echte bevestigingen,
+no-ops, herstelstappen en beperkingen. Onderstaande lokale sessieverslagen zijn
+historisch: hun toen open bevestigingen beschrijven die eerdere sessies, niet de
+actuele gecombineerde planstatus. Niet uitgevoerde optionele proeven blijven open.
+
+
 Peildatum: 2026-10-14. Technisch geleverd; menselijke gebruikspoort nog open.
 Uitsluitend synthetische bronnen. De open menselijke bevestigingen van plannen
 0 en 1 zijn niet ontvangen, toegepast of als afgerond behandeld. Deze uitvoering

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from topo_v2.cashflows import monthly_room
 from topo_v2.engine import summarize
 from topo_v2.models import (
     Account,
@@ -161,16 +162,16 @@ def read_context(context: Context, query: ContextQuery) -> CompactContext:
                 ids=unknown_availability,
             )
         )
-    # Monthly room remains outside this plan.
-    for outcome in ("monthly_room",):
-        limitations.append(
-            Limitation.model_validate(
-                {
-                    "outcome": outcome,
-                    "code": "not_supported",
-                    "ids": [],
-                }
-            )
+    monthly = None
+    if query.reference_date is not None:
+        monthly = monthly_room(
+            context.cashflows,
+            context.cashflow_settings,
+            declared.get("cashflows"),
+            query.reference_date,
+        )
+        limitations.extend(
+            item for item in monthly.limitations if item not in limitations
         )
     return CompactContext(
         context_id=context.context_id,
@@ -178,6 +179,9 @@ def read_context(context: Context, query: ContextQuery) -> CompactContext:
         assets=context.assets,
         debts=context.debts,
         goals=context.goals,
+        cashflows=context.cashflows,
+        cashflow_settings=context.cashflow_settings,
+        monthly_room=monthly,
         summary=summarize(context),
         inventories=inventories,
         transaction_coverage=coverage,

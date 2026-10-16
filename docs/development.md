@@ -426,7 +426,9 @@ x64/arm64, glibc Linux x64/arm64, and Windows x64. Each executable completes the
 contract, workspace-init, and context-status smoke flow before upload. After all
 artifacts (separate `topo` and `topo2` archives per platform) are published, the
 same workflow runs `install.sh` or `install.ps1`
-against the public release. A standalone install can run `topo upgrade` to
+against the public release. The Topo 2 smoke also exercises classified aggregates,
+structural expectations, goal reservations and read-only offline HTML generation
+with unchanged context bytes/mtime. A standalone install can run `topo upgrade` to
 download the latest published release for its platform. The command checks the
 downloaded executable's version before replacing the current binary. On Windows,
 replacement is scheduled for immediately after the CLI exits because Windows

@@ -25,11 +25,23 @@ def apply(path: Path, request: dict[str, Any], *binding: str) -> dict[str, Any]:
     return result
 
 
-def test_sources_wealth_compact_read_and_reimport(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_kinds", [False, True])
+def test_sources_wealth_compact_read_and_reimport(
+    tmp_path: Path, with_kinds: bool
+) -> None:
     path = tmp_path / "context.json"
     opts = ("--context", str(path))
     run("init", *opts)
     request = first_request()
+    if with_kinds:
+        kinds = {
+            "syn_SYN001": "income",
+            "syn_SYN002": "internal_transfer",
+            "syn_SYN003": "internal_transfer",
+            "syn_SYN004": "expense",
+        }
+        for record in request["transactions"]["add"]:
+            record["kind"] = kinds[record["id"]]
     for section, operations in wealth_request().items():
         request.setdefault(section, {}).setdefault("add", []).extend(operations["add"])
     source = tmp_path / "converted.json"
@@ -66,7 +78,9 @@ def test_sources_wealth_compact_read_and_reimport(tmp_path: Path) -> None:
     assert path.read_bytes() == raw
     apply(path, request, *binding)
     shown = run("show", *opts)["result"]
-    assert shown["schema_version"] == "topo2.context/4"
+    assert shown["schema_version"] == (
+        "topo2.context/5" if with_kinds else "topo2.context/4"
+    )
     summary = run("summary", *opts)["result"]
     validate(summary, schemas["summary"]["output"])
     eur, usd = summary["net_wealth"]["subtotals"]
@@ -141,6 +155,19 @@ def test_sources_wealth_compact_read_and_reimport(tmp_path: Path) -> None:
     for section in ("accounts", "assets", "debts", "goals"):
         assert after[section] == enriched[section]
     assert run("summary", *opts)["result"] == summary
+    if with_kinds:
+        expected = {record["id"]: record["kind"] for record in enriched["transactions"]}
+        assert all(
+            record["kind"] == expected[record["id"]]
+            for record in after["transactions"]
+            if record["id"] in expected
+        )
+        aggregate = run("aggregate-transactions", *opts, "--group-by", "month")[
+            "result"
+        ]
+        assert aggregate["count"] == 5
+        assert aggregate["totals"][0]["internal_transfers"]["count"] == 2
+        assert aggregate["totals"][0]["unknown_count"] == 1
     raw, mtime = path.read_bytes(), path.stat().st_mtime_ns
     assert run(*args)["result"]["status"] == "unchanged"
     assert path.read_bytes() == raw and path.stat().st_mtime_ns == mtime
