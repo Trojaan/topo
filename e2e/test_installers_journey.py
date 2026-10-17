@@ -143,3 +143,54 @@ def test_topo2_reports_package_version() -> None:
         text=True,
     )
     assert process.stdout.strip() == f"topo2 {version('topo-context-engine')}"
+
+
+def folder_release(
+    directory: Path, release_version: str, marker: str, *, broken: bool = False
+) -> None:
+    runtime = f"_topo2_runtime_{release_version}"
+    program = (
+        "#!/bin/sh\n"
+        f'test "$(cat "$(dirname "$0")/{runtime}/marker")" = "{marker}" || exit 1\n'
+        f'echo "topo2 {release_version}"\n'
+    )
+    with zipfile.ZipFile(directory / "topo2-linux-amd64.zip", "w") as archive:
+        archive.writestr("topo2", program)
+        if not broken:
+            archive.writestr(runtime + "/marker", marker)
+
+
+def test_folder_install_upgrade_reinstall_and_failed_upgrade(tmp_path: Path) -> None:
+    release(tmp_path, "topo", "0.9.0")
+    folder_release(tmp_path, "0.9.0", "first")
+    process = install(tmp_path, version="v0.9.0")
+    assert process.returncode == 0, process.stdout + process.stderr
+    target = tmp_path / "installed"
+    assert (target / "_topo2_runtime_0.9.0" / "marker").read_text() == "first"
+    assert install(tmp_path, version="v0.9.0").returncode == 0
+    original = (target / "topo2").read_bytes()
+    # A conflicting runtime cannot overwrite files used by the current version.
+    folder_release(tmp_path, "0.9.0", "conflicting")
+    assert install(tmp_path, version="v0.9.0").returncode != 0
+    assert (target / "topo2").read_bytes() == original
+    assert (target / "_topo2_runtime_0.9.0" / "marker").read_text() == "first"
+    release(tmp_path, "topo", "0.10.0")
+    folder_release(tmp_path, "0.10.0", "second", broken=True)
+    assert install(tmp_path, version="v0.10.0").returncode != 0
+    assert (target / "topo2").read_bytes() == original
+    folder_release(tmp_path, "0.10.0", "second")
+    process = install(tmp_path, version="v0.10.0")
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert (target / "_topo2_runtime_0.9.0" / "marker").read_text() == "first"
+    assert (target / "_topo2_runtime_0.10.0" / "marker").read_text() == "second"
+    assert not list(target.glob(".*.new"))
+
+
+def test_upgrade_from_single_binary_to_folder(tmp_path: Path) -> None:
+    release(tmp_path, "topo")
+    release(tmp_path, "topo2")
+    assert install(tmp_path).returncode == 0
+    release(tmp_path, "topo", "0.9.0")
+    folder_release(tmp_path, "0.9.0", "synthetic")
+    process = install(tmp_path, version="v0.9.0")
+    assert process.returncode == 0, process.stdout + process.stderr

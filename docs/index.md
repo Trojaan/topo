@@ -19,4 +19,5 @@ these pages hold the detail.
 design history: useful for rationale, but it does not override code, tests, or
 the documents above.
 
-- [Performance measurements](performance.md): synthetische meting en kosten van integriteitscontrole.
+- [Topo 2-performance](performance-topo2.md): opstarttijd, gerichte uitvoer en synthetische CLI-metingen.
+- [Historische Topo-performance](performance.md): generaties en kosten van integriteitscontrole.

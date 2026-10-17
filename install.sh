@@ -61,8 +61,40 @@ for executable in "${commands[@]}"; do
 done
 
 mkdir -p "$INSTALL_DIR"
+runtime_stage=""
+# Runtime directories are private to each build. Never alter an older runtime:
+# the old executable must keep working until its replacement has been validated.
+cleanup_install() {
+  for executable in "${commands[@]}"; do
+    rm -f "$INSTALL_DIR/.$executable.new"
+  done
+  if [[ -n "${runtime_stage:-}" ]]; then rm -rf "$runtime_stage"; fi
+  rm -rf "$download_dir"
+}
+trap cleanup_install EXIT
 for executable in "${commands[@]}"; do
+  if [[ "$executable" = topo2 ]]; then
+    for runtime in "$download_dir/topo2"/_topo2_runtime_*; do
+      [[ -d "$runtime" ]] || continue
+      target="$INSTALL_DIR/$(basename "$runtime")"
+      if [[ -e "$target" ]]; then
+        diff -qr "$runtime" "$target" >/dev/null || fail "installed runtime differs; existing installation preserved"
+      else
+        runtime_stage="$(mktemp -d "$INSTALL_DIR/.topo2-runtime.XXXXXX")"
+        cp -R "$runtime"/. "$runtime_stage"/
+        mv "$runtime_stage" "$target"
+        runtime_stage=""
+      fi
+    done
+  fi
   install -m 0755 "$download_dir/$executable/$executable" "$INSTALL_DIR/.$executable.new"
+  actual_version="$("$INSTALL_DIR/.$executable.new" --version)" || fail "staged $executable cannot run"
+  [[ "$actual_version" = "$executable $expected_version" ]] || fail "staged $executable reports a different version"
+  if [[ "$executable" = topo2 ]]; then
+    "$INSTALL_DIR/.$executable.new" contract show >/dev/null || fail "staged topo2 runtime cannot load"
+  fi
+done
+for executable in "${commands[@]}"; do
   mv -f "$INSTALL_DIR/.$executable.new" "$INSTALL_DIR/$executable"
   "$INSTALL_DIR/$executable" --version
 done

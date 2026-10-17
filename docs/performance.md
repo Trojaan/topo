@@ -1,5 +1,8 @@
 # Performance: 7.500 bronrecords en 21 generaties
 
+Deze pagina betreft de historische Topo-engine. Zie [Topo 2-performance](performance-topo2.md)
+voor de actuele-toestand-engine en standalone opstartmetingen.
+
 Gemeten op 4 oktober 2026, met Python 3.13.11 op macOS arm64. Alle pakketten
 zijn synthetisch en tijdelijk; er is geen persoonlijk financieel pakket gebruikt.
 De nulmeting is een expliciete referentieroute met volledige recordvalidatie,

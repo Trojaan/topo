@@ -47,6 +47,23 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
+  windows-installer-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD "install.ps1"), [ref]$tokens, [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
   wheel-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -80,8 +97,8 @@ jobs:
       - run: dist/topo contract describe --json
       - run: dist/topo init "${RUNNER_TEMP}/workspace" --json
       - run: dist/topo context status --package "${RUNNER_TEMP}/workspace/context.topo" --json
-      - run: dist/topo2 --version
-      - run: uv run python scripts/smoke_topo2.py dist/topo2 --output test-results/topo2-smoke.json
+      - run: dist/topo2/topo2 --version
+      - run: uv run python scripts/smoke_topo2.py dist/topo2/topo2 --output test-results/topo2-smoke.json
       - uses: actions/upload-artifact@v4
         with:
           name: topo2-standalone-proof

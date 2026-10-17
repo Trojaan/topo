@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from decimal import Decimal, localcontext
 from pathlib import Path
+from typing import Any, Literal
 from uuid import uuid4
 
 from topo_v2 import storage
@@ -26,6 +27,7 @@ from topo_v2.models import (
     InventoryState,
     NetWealth,
     NetWealthSubtotal,
+    RecordPatch,
     Subtotal,
     Summary,
     Transaction,
@@ -65,6 +67,8 @@ def _apply[
         Cashflow,
     )
 ](records: list[T], add: list[T], update: list[T], delete: Sequence[str]) -> list[T]:
+    if not (add or update or delete):
+        return records
     touched = [record.id for record in [*add, *update]] + list(delete)
     if len(touched) != len(set(touched)):
         raise ChangeError("An ID can occur only once per change section")
@@ -99,7 +103,62 @@ def _check_token(provided: str | None, expected: str) -> None:
         )
 
 
+def _resolve_patches(before: Context, request: ChangeRequest) -> ChangeRequest:
+    """Merge only supplied fields, then validate as ordinary complete records."""
+    resolved: dict[str, Any] = {}
+    for section in RECORD_SECTIONS:
+        changes = getattr(request, section)
+        patches: list[RecordPatch] = changes.patch
+        if not patches:
+            continue
+        touched = [
+            record.id for record in [*changes.add, *changes.update, *patches]
+        ] + changes.delete
+        if len(touched) != len(set(touched)):
+            raise ChangeError("An ID can occur only once per change section")
+        current = {record.id: record for record in getattr(before, section)}
+        updates = list(changes.update)
+        for patch in patches:
+            if patch.id not in current:
+                raise ChangeError(f"Cannot patch unknown record {patch.id}")
+            record = current[patch.id]
+            updates.append(
+                type(record).model_validate(
+                    {
+                        **record.model_dump(),
+                        **patch.model_dump(exclude_unset=True),
+                    }
+                )
+            )
+        resolved[section] = changes.model_copy(update={"update": updates, "patch": []})
+    return request.model_copy(update=resolved)
+
+
+RecordSection = Literal[
+    "accounts",
+    "assets",
+    "debts",
+    "goals",
+    "transactions",
+    "inventories",
+    "transaction_coverage",
+    "cashflows",
+]
+
+RECORD_SECTIONS: tuple[RecordSection, ...] = (
+    "accounts",
+    "assets",
+    "debts",
+    "goals",
+    "transactions",
+    "inventories",
+    "transaction_coverage",
+    "cashflows",
+)
+
+
 def _changed_context(before: Context, request: ChangeRequest) -> Context:
+    request = _resolve_patches(before, request)
     settings = dict(before.cashflow_settings)
     for currency, value in request.cashflow_settings.items():
         if value is None:
@@ -204,18 +263,13 @@ def _changed_context(before: Context, request: ChangeRequest) -> Context:
     )
 
 
-def _differences(before: Context, after: Context) -> list[Difference]:
+def _differences(
+    before: Context, after: Context, sections: set[str]
+) -> list[Difference]:
     differences: list[Difference] = []
-    for section in (
-        "accounts",
-        "assets",
-        "debts",
-        "goals",
-        "transactions",
-        "inventories",
-        "transaction_coverage",
-        "cashflows",
-    ):
+    for section in RECORD_SECTIONS:
+        if section not in sections:
+            continue
         old = {record.id: record for record in getattr(before, section)}
         new = {record.id: record for record in getattr(after, section)}
         for identifier in sorted(old.keys() | new.keys()):
@@ -250,8 +304,18 @@ def change(
 ) -> ChangeResult:
     with storage.write_lock(path):
         raw, before = storage.read(path)
+        normalized_request = request.model_dump(
+            mode="json", exclude={"confirmation_token"}
+        )
+        # Omission and explicit null have different meanings for patches. Bind
+        # the supplied fields, not their default-filled representation.
+        for section in RECORD_SECTIONS:
+            normalized_request[section]["patch"] = [
+                patch.model_dump(mode="json", exclude_unset=True)
+                for patch in getattr(request, section).patch
+            ]
         normalized = json.dumps(
-            request.model_dump(mode="json", exclude={"confirmation_token"}),
+            normalized_request,
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -269,11 +333,22 @@ def change(
         token = _token(path, raw, payload, b"change")
         _check_token(request.confirmation_token, token)
         after = _changed_context(before, request)
-        differences = _differences(before, after)
+        differences = _differences(
+            before,
+            after,
+            {
+                section
+                for section in RECORD_SECTIONS
+                if (changes := getattr(request, section)).add
+                or changes.update
+                or changes.delete
+                or changes.patch
+            },
+        )
         if not differences:
             if (
                 not any(
-                    section.add or section.update or section.delete
+                    section.add or section.update or section.delete or section.patch
                     for section in (
                         request.accounts,
                         request.assets,
@@ -313,7 +388,7 @@ def import_transactions(
         except ValueError as error:
             raise ChangeError(str(error)) from error
         after = _changed_context(before, ChangeRequest(transactions=changes))
-        differences = _differences(before, after)
+        differences = _differences(before, after, {"transactions"})
         if differences and options.confirmation_token is not None:
             storage.save(path, after)
         return TransactionImportResult(

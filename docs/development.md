@@ -417,8 +417,8 @@ uv sync --frozen --no-dev --group build
 uv run pyinstaller --clean topo.spec
 uv run pyinstaller --clean topo2.spec
 dist/topo --version
-dist/topo2 --version
-uv run python scripts/smoke_topo2.py dist/topo2
+dist/topo2/topo2 --version
+uv run python scripts/smoke_topo2.py dist/topo2/topo2
 ```
 
 Pushing a tag matching `v<package-version>` runs the release matrix for macOS
@@ -456,3 +456,14 @@ The reference disables record/fragment reuse and supplied change sets while
 preserving the same invariants; it is not an archived pre-change executable.
 Ordinary elapsed times and instrumented exclusive-function timings are separate.
 See [Performance measurements](performance.md) for the recorded results.
+
+
+Topo 2 now builds to `dist/topo2/`: package the executable together with its
+`_topo2_runtime_*` directory, preserving Unix symlinks. The installers also accept
+older single-executable archives. Runtime directories are build-specific and are
+not overwritten; a conflicting runtime aborts installation. Both replacement
+executables are staged and checked before publication. Old runtime directories
+remain available for the previous executable; they are not removed automatically.
+See [Topo 2 performance](performance-topo2.md) for synthetic benchmarks, including
+standalone startup measurements. Development agents must use synthetic data only;
+see the repository's privacy boundary in `AGENTS.md`.

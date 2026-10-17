@@ -12,7 +12,10 @@ niet bewaard. Bestaande Topo 2-contexten blijven bruikbaar.
 Vanaf `v0.6.0` leveren de [standalone installers](../README.md#installeren) zowel
 `topo` als `topo2`, zonder Python of `uv`. Voer de installer opnieuw uit als je
 Topo al hebt geïnstalleerd. Controleer met `topo2 --version` en gebruik `topo2`
-rechtstreeks in plaats van `uv run topo2`.
+rechtstreeks in plaats van `uv run topo2`. Nieuwe builds installeren Topo 2 als
+executable met een bijbehorende runtime-directory: de opdracht blijft `topo2`.
+Laat die directory naast de executable staan; de installer regelt dit automatisch.
+Er is geen achtergrondproces en geen Python-installatie nodig.
 
 Voor ontwikkelen vanuit deze repository, na `uv sync --frozen`:
 
@@ -20,9 +23,20 @@ Voor ontwikkelen vanuit deze repository, na `uv sync --frozen`:
 uv run topo2 init --context /pad/naar/mijn-financien/context.json
 uv run topo2 contract
 uv run topo2 contract change
-uv run topo2 show --context /pad/naar/mijn-financien/context.json
+uv run topo2 context --context /pad/naar/mijn-financien/context.json
+uv run topo2 show --context /pad/naar/mijn-financien/context.json --sections accounts,goals
 uv run topo2 summary --context /pad/naar/mijn-financien/context.json
 ```
+
+Begin als agent met `context`: dit geeft het compacte overzicht zonder
+transactiedetails, inclusief beperkingen. Gebruik `show --sections accounts,cashflows,goals`
+voor alleen de genoemde gegevenssecties. De uitvoer bevat altijd `context_id` en
+`schema_version`; niet-geselecteerde secties ontbreken, geselecteerde lege secties
+blijven aanwezig. Zonder `--sections` blijft `show` de volledige context tonen.
+Het filter beperkt uitvoer, niet opslagvalidatie: alle records blijven gecontroleerd.
+Gebruik `transactions` met filters/paginering voor details en `aggregate-transactions`
+voor gerealiseerde totalen. Zoek het handboek via `docs/topo2.md` ten opzichte van
+de repositoryroot; zoek niet over het hele bestandssysteem.
 
 De bovenliggende directory moet bestaan. `init` overschrijft nooit een context.
 Alle commando's geven JSON terug; `--json` wordt ook geaccepteerd. Resultaten staan
@@ -72,9 +86,25 @@ menselijke goedkeuring de teruggegeven token toe als `confirmation_token` aan
 **hetzelfde request** en voer hetzelfde commando uit. Alle wijzigingen worden
 samen opgeslagen of geheel geweigerd. Er zijn geen opgeslagen voorstellen.
 
-`add`, `update` en `delete` zijn beschikbaar onder `accounts`, `assets`, `debts`, `goals`, `transactions` en `cashflows`.
+`add`, `update`, `patch` en `delete` zijn beschikbaar onder `accounts`, `assets`, `debts`, `goals`, `transactions` en `cashflows`.
 `update` vervangt een compleet record, inclusief optionele velden; haal het huidige
-record eerst op met `show`. `delete` bevat IDs. Een ID mag per sectie slechts één
+record eerst gericht op met `show --sections accounts` (of de betreffende sectie).
+Gebruik voor kleine wijzigingen liever `patch`, bijvoorbeeld:
+
+```json
+{"accounts":{"patch":[{"id":"spaarrekening","balance":"12600.50","as_of":"2026-10-17"}]}}
+```
+
+Een patch bevat `id` en minstens één te wijzigen veld. Weggelaten velden blijven
+behouden; expliciet `null` wist alleen nullable velden. Meegegeven lijsten en
+objectvelden vervangen het hele veld, dus een bedragband vereist beide grenzen.
+Onbekende velden, onbekende IDs en meerdere bewerkingen op hetzelfde ID binnen een
+sectie worden geweigerd. Het complete resultaat moet geldig zijn, inclusief
+verwijzingen en datumvereisten. Er worden geen financiële waarden afgeleid.
+Patches gebruiken dezelfde preview en expliciete menselijke bevestiging als updates.
+Een effectieve no-op schrijft niets en migreert geen opslagversie.
+
+`delete` bevat IDs. Een ID mag per sectie slechts één
 keer worden gewijzigd. IDs zijn globaal uniek, stabiel en onafhankelijk van labels.
 Verwijzingen moeten na de hele wijziging geldig zijn: verwijder doelkoppelingen
 of brokerkoppelingen samen met het gekoppelde record. Een request zonder bewerkingen
@@ -241,12 +271,15 @@ analyses in deze uitvoer; de agent rekent zelf met de gerichte selectie.
 Neem de volgende instructies over in de `AGENTS.md` van de financiële werkmap:
 
 > Gebruik voor deze context uitsluitend `topo2` en ontdek het contract met
-> `topo2 contract`. Lees rekeningen, bezittingen en doelen met `show`. Gebruik
+> `topo2 contract`. Begin met `context`; lees specifieke records met
+> `show --sections accounts,assets,goals` (kies de benodigde secties). Gebruik
 > `transactions` met filters en paginering voor transacties; lees niet steeds
 > de hele context. Importeer JSON/CSV met `import-transactions` en vaste IDs.
 > Bij import behouden ontbrekende labels en lege CSV-cellen bestaande waarden;
 > JSON null wist expliciet. Bij change.update neem je bestaande optionele velden
-> zelf mee: dat blijft een volledige-recordvervanging.
+> zelf mee: dat blijft een volledige-recordvervanging. Gebruik voor kleine
+> wijzigingen `patch`: id plus gewijzigde velden; weglaten behoudt, null wist
+> alleen nullable velden. Dezelfde gezamenlijke preview/bevestiging blijft nodig.
 > Transacties wijzigen rekeningstanden niet automatisch. Gebruik
 > `aggregate-transactions` voor compacte gerealiseerde totalen en gerichte details
 > voor verdere analyse. Bereid transactiesoorten expliciet voor in de gezamenlijke
@@ -832,3 +865,17 @@ ontvangt uitsluitend rapportdata en doet geen financiële berekeningen. Geen det
 of transactiescan per doel. De volledige JSON-context wordt nog steeds ingelezen en
 gevalideerd. Zie [plan-7-bewijs](plans/topo2-context/07-bewijs.md) voor controles,
 bronjourney, visuele inspectie en het schaalprofiel.
+
+
+## Performance en eenvoudige bediening
+
+De primaire verbetering zit in de standalone opstart: een programmamap voorkomt
+uitpakken bij iedere opdracht. Help en versie laden geen financiële modellen.
+Gerichte uitvoer voorkomt dat agents telkens alle transacties lezen. Onaangeraakte
+collecties worden niet opnieuw geïndexeerd voor wijzigingen; diffs beperken zich
+tot geraakte recordsecties. Volledige contextvalidatie en atomaire opslag blijven
+behouden; er is geen nieuwe opslagversie, cache, daemon of journaal.
+
+Zie [Topo 2-performance](performance-topo2.md) voor synthetische metingen en
+reproductie. `scripts/benchmark_reads.py` en de oudere performancepagina betreffen
+de historische Topo-engine, niet Topo 2.

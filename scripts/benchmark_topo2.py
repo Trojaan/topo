@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import platform
+import statistics
 import subprocess
 import sys
 from hashlib import sha256
@@ -21,9 +22,50 @@ def main() -> int:
     parser.add_argument(
         "--transactions", type=int, choices=(10_000, 100_000), default=10_000
     )
+    parser.add_argument(
+        "--executable",
+        type=Path,
+        help="Measure this standalone executable instead of Python",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=3,
+        help="Independent process samples per read/startup command",
+    )
+    parser.add_argument("--startup-only", action="store_true")
     args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("runs must be positive")
+    executable = (
+        [str(args.executable.resolve())]
+        if args.executable
+        else [sys.executable, "-m", "topo_v2"]
+    )
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    startup: list[dict[str, Any]] = []
+    for argument in ("--help", "--version"):
+        samples = []
+        for _ in range(args.runs):
+            started = perf_counter()
+            subprocess.run(
+                [*executable, argument],
+                capture_output=True,
+                check=True,
+                env=environment,
+            )
+            samples.append(perf_counter() - started)
+        startup.append(
+            {
+                "argument": argument,
+                "seconds": samples,
+                "median_seconds": statistics.median(samples),
+            }
+        )
+    if args.startup_only:
+        print(json.dumps({"executable": executable, "startup": startup}, indent=2))
+        return 0
     with TemporaryDirectory(prefix="topo2-benchmark-") as directory:
         path = Path(directory) / "context.json"
 
@@ -33,19 +75,22 @@ def main() -> int:
             command: str, request: dict[str, Any] | None = None, *arguments: str
         ) -> tuple[dict[str, Any], float]:
             started = perf_counter()
+            invocation = [
+                sys.executable,
+                "-c",
+                (
+                    "import resource, sys; from topo_v2.cli import main; "
+                    "code = main(); print('__TOPO_RSS__' + str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss), file=sys.stderr); sys.exit(code)"
+                ),
+                command,
+                "--context",
+                str(path),
+                *arguments,
+            ]
+            if args.executable:
+                invocation = [*executable, command, "--context", str(path), *arguments]
             process = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    (
-                        "import resource, sys; from topo_v2.cli import main; "
-                        "code = main(); print('__TOPO_RSS__' + str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss), file=sys.stderr); sys.exit(code)"
-                    ),
-                    command,
-                    "--context",
-                    str(path),
-                    *arguments,
-                ],
+                invocation,
                 input=json.dumps(request) if request else None,
                 text=True,
                 capture_output=True,
@@ -53,7 +98,11 @@ def main() -> int:
                 env=environment,
             )
             elapsed = perf_counter() - started
-            rss = float(process.stderr.split("__TOPO_RSS__")[-1].strip())
+            rss = (
+                float(process.stderr.split("__TOPO_RSS__")[-1].strip())
+                if not args.executable
+                else None
+            )
             measurements.append(
                 {
                     "command": command,
@@ -62,7 +111,9 @@ def main() -> int:
                     "stdout_bytes": len(process.stdout.encode()),
                     "peak_rss_bytes": int(
                         rss if sys.platform == "darwin" else rss * 1024
-                    ),
+                    )
+                    if rss is not None
+                    else None,
                 }
             )
             result = json.loads(process.stdout)["result"]
@@ -387,6 +438,34 @@ def main() -> int:
             run("monthly-room", None, "--reference-date", "2026-10-14")[0]
             == monthly_before
         )
+        patch_request = {
+            "accounts": {"patch": [{"id": "bank_0", "balance": "1235.58"}]}
+        }
+        patch_preview, patch_preview_time = run("change", patch_request)
+        assert len(patch_preview["changes"]) == 1
+        assert patch_preview["changes"][0]["after"]["availability"] == "free"
+        patch_request["confirmation_token"] = patch_preview["confirmation_token"]
+        _, patch_apply_time = run("change", patch_request)
+        patch_request.pop("confirmation_token")
+        patch_noop, patch_noop_time = run("change", patch_request)
+        assert patch_noop["status"] == "unchanged"
+        reads: list[dict[str, Any]] = []
+        for command, arguments in (
+            ("show", ()),
+            ("show", ("--sections", "cashflows,goals")),
+            ("context", ()),
+            ("summary", ()),
+            ("monthly-room", ("--reference-date", "2026-10-14")),
+        ):
+            samples = [run(command, None, *arguments)[1] for _ in range(args.runs)]
+            reads.append(
+                {
+                    "command": command,
+                    "arguments": list(arguments),
+                    "seconds": samples,
+                    "median_seconds": statistics.median(samples),
+                }
+            )
         report_timings: dict[str, float] = {}
         report_phases: list[dict[str, Any]] = []
         for label, period in (
@@ -449,6 +528,9 @@ print(json.dumps(dict(read_validation_seconds=read_seconds,
             )
         timings = {
             **report_timings,
+            "patch_preview_one": patch_preview_time,
+            "patch_apply_one": patch_apply_time,
+            "patch_unchanged_one": patch_noop_time,
             "goal_preview_100": goal_preview_time,
             "goal_update_100": goal_update_time,
             "goal_unchanged_100": goal_noop_time,
@@ -483,6 +565,9 @@ print(json.dumps(dict(read_validation_seconds=read_seconds,
                         "platform": platform.platform(),
                         "python": platform.python_version(),
                     },
+                    "executable": executable,
+                    "startup": startup,
+                    "reads": reads,
                     "measurements": measurements,
                     "report_phases": report_phases,
                     "seconds": timings,
@@ -494,7 +579,11 @@ print(json.dumps(dict(read_validation_seconds=read_seconds,
         return (
             0
             if args.transactions == 100_000
-            or all(value < 1.0 for value in timings.values())
+            or (
+                all(value < 1.0 for value in timings.values())
+                and all(item["median_seconds"] < 1.0 for item in startup)
+                and all(item["median_seconds"] < 1.0 for item in reads)
+            )
             else 1
         )
 

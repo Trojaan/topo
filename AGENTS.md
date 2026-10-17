@@ -1,5 +1,15 @@
 # Topo agent map
 
+## Privacy boundary for development agents
+
+Agents developing Topo in this repository must NEVER open, search, inspect or
+process the user's personal financial files, including contexts, exports, source
+documents, reports and copies. Do not discover their locations or use them for
+benchmarks, debugging or tests. Use only explicitly synthetic fixtures generated
+in temporary directories. This rule applies to development agents in this
+repository; it must not be distributed as an instruction for financial analysis
+agents, which may read the user's financial data in their own financial workspace.
+
 Topo is a local-first Python CLI that stores an immutable, auditable financial
 context package. It is an engine, not an adviser or a web application.
 
@@ -32,6 +42,11 @@ scripts/               Local launcher, lints, and verification entry points
 `src/topo/` remains the historical engine; its generation, provenance and proposal
 rules below apply there. `src/topo_v2/` is a separate current-state engine, exposed
 as `topo2`. Read `docs/topo2.md` for its records, CLI and agent confirmation flow.
+Start agent reads with `context`; use `show --sections accounts,cashflows,goals`
+for selected records. This filters output only; full storage validation remains.
+Use per-section `patch` in `change` for small edits: id plus supplied fields, omission preserves,
+explicit null clears nullable fields. `update` still replaces a complete record.
+Patches retain the same joint human-approved preview and token binding.
 Topo 2 never imports the old engine and overwrites only its own current JSON
 context after one explicitly human-approved preview. Transactions are ordinary
 records: use import-transactions and filtered/paginated transactions queries.
