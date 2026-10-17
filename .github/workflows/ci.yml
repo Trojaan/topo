@@ -80,8 +80,8 @@ jobs:
       - run: dist/topo contract describe --json
       - run: dist/topo init "${RUNNER_TEMP}/workspace" --json
       - run: dist/topo context status --package "${RUNNER_TEMP}/workspace/context.topo" --json
-      - run: dist/topo2 --version
-      - run: uv run python scripts/smoke_topo2.py dist/topo2 --output test-results/topo2-smoke.json
+      - run: dist/topo2/topo2 --version
+      - run: uv run python scripts/smoke_topo2.py dist/topo2/topo2 --output test-results/topo2-smoke.json
       - uses: actions/upload-artifact@v4
         with:
           name: topo2-standalone-proof

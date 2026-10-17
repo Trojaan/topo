@@ -39,8 +39,9 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/Trojaan/topo/main/install.ps1 | iex
 ```
 
-De installer downloadt de nieuwste standalone release. Python en `uv` zijn niet
-nodig om de geïnstalleerde CLI te gebruiken. Voer de installer opnieuw uit om
+De installer downloadt de nieuwste standalone release. Topo 2 bestaat uit een
+executable en een bijbehorende runtime-directory; de installer beheert beide.
+Python en `uv` zijn niet nodig om de geïnstalleerde CLI te gebruiken. Voer de installer opnieuw uit om
 beide commando’s bij te werken. `topo upgrade` werkt alleen de bestaande `topo` bij.
 Een specifieke versie installeren kan met
 `TOPO_VERSION=v0.3.0` op Unix of `-Version v0.3.0` in PowerShell.

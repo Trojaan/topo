@@ -63,21 +63,21 @@ jobs:
           "$executable" contract describe --json
           "$executable" init "$RUNNER_TEMP/topo-workspace" --json
           "$executable" context status --package "$RUNNER_TEMP/topo-workspace/context.topo" --json
-          "dist/${{ matrix.binary2 }}" --version
-          uv run python scripts/smoke_topo2.py "dist/${{ matrix.binary2 }}" --output test-results/topo2-smoke.json
+          "dist/topo2/${{ matrix.binary2 }}" --version
+          uv run python scripts/smoke_topo2.py "dist/topo2/${{ matrix.binary2 }}" --output test-results/topo2-smoke.json
       - name: Package Unix executable
         if: runner.os != 'Windows'
         shell: bash
         run: |
           cd dist
           zip "topo-${{ matrix.platform }}.zip" topo
-          zip "topo2-${{ matrix.platform }}.zip" topo2
+          (cd topo2 && zip -yr "../topo2-${{ matrix.platform }}.zip" .)
       - name: Package Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Compress-Archive -Path dist/topo.exe -DestinationPath dist/topo-${{ matrix.platform }}.zip
-          Compress-Archive -Path dist/topo2.exe -DestinationPath dist/topo2-${{ matrix.platform }}.zip
+          Compress-Archive -Path dist/topo2/* -DestinationPath dist/topo2-${{ matrix.platform }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: topo-${{ matrix.platform }}

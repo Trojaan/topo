@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 CONTRACT_VERSION: Literal["topo2.cli/3"] = "topo2.cli/3"
 # Base contexts stay compatible; optional records opt into newer storage versions.
@@ -339,49 +347,197 @@ class Context(Model):
         return self
 
 
+def _omitted_patch_field() -> Any:
+    # Unset fields need a placeholder, even for non-nullable annotations.
+    # They are never read or serialized; explicit null still gets validated.
+    return None
+
+
+class RecordPatch(Model):
+    """Omission preserves a field; supplied values are validated after merging."""
+
+    model_config = ConfigDict(json_schema_extra={"minProperties": 2})
+
+    id: Identifier
+
+    @model_serializer(mode="wrap")
+    def supplied_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in handler(self).items()
+            if key in self.model_fields_set
+        }
+
+    @model_validator(mode="after")
+    def has_changes(self) -> Self:
+        if self.model_fields_set == {"id"}:
+            raise ValueError("A patch requires at least one changed field")
+        return self
+
+
+class AccountPatch(RecordPatch):
+    label: Label = Field(default_factory=_omitted_patch_field)
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    as_of: date | None = Field(default_factory=_omitted_patch_field)
+    availability: Literal["free", "restricted", "unknown"] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    availability_note: Label | None = Field(default_factory=_omitted_patch_field)
+    type: Literal["payment", "savings", "investment"] = Field(
+        default_factory=_omitted_patch_field
+    )
+    balance: Money | None = Field(default_factory=_omitted_patch_field)
+
+
+class AssetPatch(RecordPatch):
+    label: Label = Field(default_factory=_omitted_patch_field)
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    as_of: date | None = Field(default_factory=_omitted_patch_field)
+    availability: Literal["free", "restricted", "unknown"] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    availability_note: Label | None = Field(default_factory=_omitted_patch_field)
+    type: Literal["etf", "property", "vehicle", "cash", "investment", "other"] = Field(
+        default_factory=_omitted_patch_field
+    )
+    value: Annotated[Money, Field(ge=0)] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    broker_account_id: Identifier | None = Field(default_factory=_omitted_patch_field)
+
+
+class DebtPatch(RecordPatch):
+    label: Label = Field(default_factory=_omitted_patch_field)
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    as_of: date | None = Field(default_factory=_omitted_patch_field)
+    type: Literal["mortgage", "loan", "credit_card", "overdraft", "other"] = Field(
+        default_factory=_omitted_patch_field
+    )
+    amount: Annotated[Money, Field(ge=0)] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    interest_rate: Annotated[Money, Field(ge=0)] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    end_date: date | None = Field(default_factory=_omitted_patch_field)
+    account_id: Identifier | None = Field(default_factory=_omitted_patch_field)
+
+
+class GoalPatch(RecordPatch):
+    name: Label = Field(default_factory=_omitted_patch_field)
+    target_amount: Annotated[Money, Field(gt=0)] = Field(
+        default_factory=_omitted_patch_field
+    )
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    target_date: date | None = Field(default_factory=_omitted_patch_field)
+    reserved_amount: Annotated[Money, Field(ge=0)] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    monthly_contribution: Annotated[Money, Field(ge=0)] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    priority: Literal["low", "normal", "high"] | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    note: Label | None = Field(default_factory=_omitted_patch_field)
+    account_ids: list[Identifier] = Field(default_factory=_omitted_patch_field)
+    asset_ids: list[Identifier] = Field(default_factory=_omitted_patch_field)
+
+
+class TransactionPatch(RecordPatch):
+    account_id: Identifier = Field(default_factory=_omitted_patch_field)
+    booking_date: date = Field(default_factory=_omitted_patch_field)
+    amount: Money = Field(default_factory=_omitted_patch_field)
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    description: str = Field(default_factory=_omitted_patch_field)
+    category: Label | None = Field(default_factory=_omitted_patch_field)
+    source: Label | None = Field(default_factory=_omitted_patch_field)
+    kind: TransactionKind | None = Field(default_factory=_omitted_patch_field)
+
+
+class InventoryPatch(RecordPatch):
+    id: Domain
+    status: Literal["unknown", "partial", "complete"] = Field(
+        default_factory=_omitted_patch_field
+    )
+    checked_on: date = Field(default_factory=_omitted_patch_field)
+
+
+class TransactionCoveragePatch(RecordPatch):
+    account_id: Identifier = Field(default_factory=_omitted_patch_field)
+    from_date: date = Field(default_factory=_omitted_patch_field)
+    to_date: date = Field(default_factory=_omitted_patch_field)
+    checked_on: date = Field(default_factory=_omitted_patch_field)
+
+
+class CashflowPatch(RecordPatch):
+    label: Label = Field(default_factory=_omitted_patch_field)
+    kind: Literal["income", "expense"] = Field(default_factory=_omitted_patch_field)
+    amount: Annotated[Money, Field(ge=0)] | ExpectedRange | None = Field(
+        default_factory=_omitted_patch_field
+    )
+    currency: Currency = Field(default_factory=_omitted_patch_field)
+    frequency: Literal["weekly", "four_weekly", "monthly", "quarterly", "yearly"] = (
+        Field(default_factory=_omitted_patch_field)
+    )
+    start_date: date = Field(default_factory=_omitted_patch_field)
+    end_date: date | None = Field(default_factory=_omitted_patch_field)
+    category: Label | None = Field(default_factory=_omitted_patch_field)
+    source: Label | None = Field(default_factory=_omitted_patch_field)
+    debt_id: Identifier | None = Field(default_factory=_omitted_patch_field)
+
+
 class AccountChanges(Model):
+    patch: list[AccountPatch] = Field(default_factory=list)
     add: list[Account] = Field(default_factory=list)
     update: list[Account] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class AssetChanges(Model):
+    patch: list[AssetPatch] = Field(default_factory=list)
     add: list[Asset] = Field(default_factory=list)
     update: list[Asset] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class DebtChanges(Model):
+    patch: list[DebtPatch] = Field(default_factory=list)
     add: list[Debt] = Field(default_factory=list)
     update: list[Debt] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class GoalChanges(Model):
+    patch: list[GoalPatch] = Field(default_factory=list)
     add: list[Goal] = Field(default_factory=list)
     update: list[Goal] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class TransactionChanges(Model):
+    patch: list[TransactionPatch] = Field(default_factory=list)
     add: list[Transaction] = Field(default_factory=list)
     update: list[Transaction] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class InventoryChanges(Model):
+    patch: list[InventoryPatch] = Field(default_factory=list)
     add: list[Inventory] = Field(default_factory=list)
     update: list[Inventory] = Field(default_factory=list)
     delete: list[Domain] = Field(default_factory=list)
 
 
 class CoverageChanges(Model):
+    patch: list[TransactionCoveragePatch] = Field(default_factory=list)
     add: list[TransactionCoverage] = Field(default_factory=list)
     update: list[TransactionCoverage] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)
 
 
 class CashflowChanges(Model):
+    patch: list[CashflowPatch] = Field(default_factory=list)
     add: list[Cashflow] = Field(default_factory=list)
     update: list[Cashflow] = Field(default_factory=list)
     delete: list[Identifier] = Field(default_factory=list)

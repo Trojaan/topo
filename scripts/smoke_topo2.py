@@ -97,6 +97,19 @@ def smoke(executable: Path) -> dict[str, Any]:
         assert (
             len(state["accounts"]) == len(state["assets"]) == len(state["goals"]) == 1
         )
+        focused = run("show", None, "--sections", "accounts,goals")
+        assert set(focused) == {"context_id", "schema_version", "accounts", "goals"}
+        patch_request: dict[str, Any] = {
+            "accounts": {
+                "patch": [{"id": "broker", "label": "Synthetic renamed broker"}]
+            }
+        }
+        patch_preview = run("change", patch_request)
+        assert patch_preview["changes"][0]["after"]["availability"] == "free"
+        patch_request["confirmation_token"] = patch_preview["confirmation_token"]
+        assert run("change", patch_request)["status"] == "applied"
+        patch_request.pop("confirmation_token")
+        assert run("change", patch_request)["status"] == "unchanged"
         assert "history" not in state
         transactions = Path(directory) / "transactions.csv"
         transactions.write_text(
