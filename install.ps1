@@ -53,7 +53,7 @@ try {
     foreach ($Command in $Commands) {
         $ExtractDir = Join-Path $TempDir $Command
         if ($Command -eq "topo2") {
-            foreach ($Runtime in Get-ChildItem -Path $ExtractDir -Directory -Filter "_topo2_runtime_*") {
+            foreach ($Runtime in (Get-ChildItem -Path $ExtractDir -Directory -Filter "_topo2_runtime_*")) {
                 $RuntimeTarget = Join-Path $InstallDir $Runtime.Name
                 if (Test-Path $RuntimeTarget) {
                     # Never overwrite files used by a running or previous executable.
