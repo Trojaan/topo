@@ -1,0 +1,1067 @@
+Independent real CLI verification for v0.10.0 on 2026-10-17.
+All records and amounts below are generated synthetic fixtures.
+No personal context, source, export, report or copy was accessed.
+Confirmation tokens are mechanical test inputs, not human financial approval.
+
+$ topo2 init --context <synthetic-temp>/context.json
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "init",
+  "result": {
+    "schema_version": "topo2.context/2",
+    "context_id": "31110167-75bb-48b4-9dd0-6b5465fe81e6",
+    "accounts": [],
+    "assets": [],
+    "debts": [],
+    "goals": [],
+    "transactions": [],
+    "cashflows": [],
+    "cashflow_settings": {},
+    "inventories": [],
+    "transaction_coverage": []
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"add": [{"id": "synthetic-account", "label": "Synthetic Savings", "type": "savings", "balance": "5000", "as_of": "2026-10-17", "availability": "free", "availability_note": "Synthetic optional note"}]}, "goals": {"add": [{"id": "synthetic-goal", "name": "Synthetic goal", "target_amount": "7000", "account_ids": ["synthetic-account"], "note": "Synthetic goal note"}]}}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "cb322546b1fd68608a5ab0fc2c4d7f4041bf1a6514d52894516ac37f59105f0a",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": null,
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5000"
+        }
+      },
+      {
+        "section": "goals",
+        "id": "synthetic-goal",
+        "before": null,
+        "after": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [
+            "synthetic-account"
+          ],
+          "asset_ids": []
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"add": [{"id": "synthetic-account", "label": "Synthetic Savings", "type": "savings", "balance": "5000", "as_of": "2026-10-17", "availability": "free", "availability_note": "Synthetic optional note"}]}, "goals": {"add": [{"id": "synthetic-goal", "name": "Synthetic goal", "target_amount": "7000", "account_ids": ["synthetic-account"], "note": "Synthetic goal note"}]}, "confirmation_token": "cb322546b1fd68608a5ab0fc2c4d7f4041bf1a6514d52894516ac37f59105f0a"}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "applied",
+    "confirmation_token": "cb322546b1fd68608a5ab0fc2c4d7f4041bf1a6514d52894516ac37f59105f0a",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": null,
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5000"
+        }
+      },
+      {
+        "section": "goals",
+        "id": "synthetic-goal",
+        "before": null,
+        "after": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [
+            "synthetic-account"
+          ],
+          "asset_ids": []
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections accounts,goals --context <synthetic-temp>/context.json
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "show",
+  "result": {
+    "schema_version": "topo2.context/7",
+    "context_id": "31110167-75bb-48b4-9dd0-6b5465fe81e6",
+    "accounts": [
+      {
+        "id": "synthetic-account",
+        "label": "Synthetic Savings",
+        "currency": "EUR",
+        "as_of": "2026-10-17",
+        "availability": "free",
+        "availability_note": "Synthetic optional note",
+        "type": "savings",
+        "balance": "5000"
+      }
+    ],
+    "goals": [
+      {
+        "id": "synthetic-goal",
+        "name": "Synthetic goal",
+        "target_amount": "7000",
+        "currency": "EUR",
+        "target_date": null,
+        "reserved_amount": null,
+        "monthly_contribution": null,
+        "priority": null,
+        "note": "Synthetic goal note",
+        "account_ids": [
+          "synthetic-account"
+        ],
+        "asset_ids": []
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections bogus --context <synthetic-temp>/context.json
+exit: 2
+usage: __main__.py show [-h] [--json] [--context CONTEXT]
+                        [--sections SECTIONS]
+__main__.py show: error: argument --sections: Use comma-separated sections: accounts,assets,debts,goals,transactions,cashflows,cashflow_settings,inventories,transaction_coverage
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "balance": "5100"}]}}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "95aa90189cff6e22ced7a419d5a844f98b462e48b50af519b40d6087b9cf7f95",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5000"
+        },
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "balance": "5100"}]}, "confirmation_token": "95aa90189cff6e22ced7a419d5a844f98b462e48b50af519b40d6087b9cf7f95"}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "applied",
+    "confirmation_token": "95aa90189cff6e22ced7a419d5a844f98b462e48b50af519b40d6087b9cf7f95",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5000"
+        },
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections accounts --context <synthetic-temp>/context.json
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "show",
+  "result": {
+    "schema_version": "topo2.context/7",
+    "context_id": "31110167-75bb-48b4-9dd0-6b5465fe81e6",
+    "accounts": [
+      {
+        "id": "synthetic-account",
+        "label": "Synthetic Savings",
+        "currency": "EUR",
+        "as_of": "2026-10-17",
+        "availability": "free",
+        "availability_note": "Synthetic optional note",
+        "type": "savings",
+        "balance": "5100"
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "label": "Synthetic renamed"}]}}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "b1f9391fcb5f8f754dea1d6c7c5abcf9b707fc3bfe3c3ec144429a67da160e14",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        },
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic renamed",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "label": "Synthetic renamed", "availability_note": null}]}, "confirmation_token": "b1f9391fcb5f8f754dea1d6c7c5abcf9b707fc3bfe3c3ec144429a67da160e14"}
+exit: 1
+{"contract_version": "topo2.cli/3", "command": "change", "error": {"code": "STALE_CONFIRMATION", "message": "Request or context changed; obtain and approve a new preview"}}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "availability_note": null}]}, "goals": {"patch": [{"id": "synthetic-goal", "account_ids": []}]}}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "2fae83f954a382190d563c46519158aaaebe72700b851f2d03285a74f6a43834",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        },
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": null,
+          "type": "savings",
+          "balance": "5100"
+        }
+      },
+      {
+        "section": "goals",
+        "id": "synthetic-goal",
+        "before": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [
+            "synthetic-account"
+          ],
+          "asset_ids": []
+        },
+        "after": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [],
+          "asset_ids": []
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "availability_note": null}]}, "goals": {"patch": [{"id": "synthetic-goal", "account_ids": []}]}, "confirmation_token": "2fae83f954a382190d563c46519158aaaebe72700b851f2d03285a74f6a43834"}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "applied",
+    "confirmation_token": "2fae83f954a382190d563c46519158aaaebe72700b851f2d03285a74f6a43834",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": "Synthetic optional note",
+          "type": "savings",
+          "balance": "5100"
+        },
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic Savings",
+          "currency": "EUR",
+          "as_of": "2026-10-17",
+          "availability": "free",
+          "availability_note": null,
+          "type": "savings",
+          "balance": "5100"
+        }
+      },
+      {
+        "section": "goals",
+        "id": "synthetic-goal",
+        "before": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [
+            "synthetic-account"
+          ],
+          "asset_ids": []
+        },
+        "after": {
+          "id": "synthetic-goal",
+          "name": "Synthetic goal",
+          "target_amount": "7000",
+          "currency": "EUR",
+          "target_date": null,
+          "reserved_amount": null,
+          "monthly_contribution": null,
+          "priority": null,
+          "note": "Synthetic goal note",
+          "account_ids": [],
+          "asset_ids": []
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections accounts,goals --context <synthetic-temp>/context.json
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "show",
+  "result": {
+    "schema_version": "topo2.context/7",
+    "context_id": "31110167-75bb-48b4-9dd0-6b5465fe81e6",
+    "accounts": [
+      {
+        "id": "synthetic-account",
+        "label": "Synthetic Savings",
+        "currency": "EUR",
+        "as_of": "2026-10-17",
+        "availability": "free",
+        "availability_note": null,
+        "type": "savings",
+        "balance": "5100"
+      }
+    ],
+    "goals": [
+      {
+        "id": "synthetic-goal",
+        "name": "Synthetic goal",
+        "target_amount": "7000",
+        "currency": "EUR",
+        "target_date": null,
+        "reserved_amount": null,
+        "monthly_contribution": null,
+        "priority": null,
+        "note": "Synthetic goal note",
+        "account_ids": [],
+        "asset_ids": []
+      }
+    ]
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"accounts": {"patch": [{"id": "synthetic-account", "availability_note": null}]}, "goals": {"patch": [{"id": "synthetic-goal", "account_ids": []}]}}
+exit: 0
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "unchanged",
+    "confirmation_token": null,
+    "changes": []
+  }
+}
+
+
+$ topo2 change --context <synthetic-temp>/context.json
+request: {"goals": {"patch": [{"id": "synthetic-goal", "account_ids": ["missing-account"]}]}}
+exit: 1
+{"contract_version": "topo2.cli/3", "command": "change", "error": {"code": "INVALID_DATA", "message": "1 validation error for Context\n  Value error, Goal synthetic-goal: unknown linked record missing-account [type=value_error, input_value={'schema_version': 'topo2...])], 'transactions': []}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"}}
+
+
+PASS: focused sections, bad sections, omitted fields, null clearing, list replacement, preview read-only, token omission/null binding, unchanged bytes+mtime, global reference validation. Tokens exercised mechanically; no human financial approval asserted.
+
+$ topo2 init
+{
+  "contract_version": "topo2.cli/3",
+  "command": "init",
+  "result": {
+    "schema_version": "topo2.context/2",
+    "context_id": "41109666-1efd-4ff1-825a-dc4754eff74e",
+    "accounts": [],
+    "assets": [],
+    "debts": [],
+    "goals": [],
+    "transactions": [],
+    "cashflows": [],
+    "cashflow_settings": {},
+    "inventories": [],
+    "transaction_coverage": []
+  }
+}
+
+
+$ topo2 change
+{"accounts": {"add": [{"id": "synthetic-account", "label": "Synthetic broker", "type": "investment"}]}, "assets": {"add": [{"id": "synthetic-asset", "label": "Synthetic asset", "type": "etf", "broker_account_id": "synthetic-account", "availability_note": "Synthetic note"}]}, "debts": {"add": [{"id": "synthetic-debt", "label": "Synthetic debt", "type": "loan", "interest_rate": "2"}]}, "transactions": {"add": [{"id": "synthetic-transaction", "account_id": "synthetic-account", "booking_date": "2026-10-17", "amount": "-10", "currency": "EUR", "description": "Synthetic transaction", "category": "Synthetic category", "source": "Synthetic source"}]}, "cashflows": {"add": [{"id": "synthetic-cashflow", "label": "Synthetic income", "kind": "income", "frequency": "monthly", "start_date": "2026-10-17", "category": "Synthetic category", "source": "Synthetic source"}]}}
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "a0d00b4da72fba9caeec3e3453fac4ab9cacbc4db84518258e4664b802527918",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": null,
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic broker",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": null,
+          "type": "investment",
+          "balance": null
+        }
+      },
+      {
+        "section": "assets",
+        "id": "synthetic-asset",
+        "before": null,
+        "after": {
+          "id": "synthetic-asset",
+          "label": "Synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        }
+      },
+      {
+        "section": "debts",
+        "id": "synthetic-debt",
+        "before": null,
+        "after": {
+          "id": "synthetic-debt",
+          "label": "Synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        }
+      },
+      {
+        "section": "transactions",
+        "id": "synthetic-transaction",
+        "before": null,
+        "after": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        }
+      },
+      {
+        "section": "cashflows",
+        "id": "synthetic-cashflow",
+        "before": null,
+        "after": {
+          "id": "synthetic-cashflow",
+          "label": "Synthetic income",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change
+{"accounts": {"add": [{"id": "synthetic-account", "label": "Synthetic broker", "type": "investment"}]}, "assets": {"add": [{"id": "synthetic-asset", "label": "Synthetic asset", "type": "etf", "broker_account_id": "synthetic-account", "availability_note": "Synthetic note"}]}, "debts": {"add": [{"id": "synthetic-debt", "label": "Synthetic debt", "type": "loan", "interest_rate": "2"}]}, "transactions": {"add": [{"id": "synthetic-transaction", "account_id": "synthetic-account", "booking_date": "2026-10-17", "amount": "-10", "currency": "EUR", "description": "Synthetic transaction", "category": "Synthetic category", "source": "Synthetic source"}]}, "cashflows": {"add": [{"id": "synthetic-cashflow", "label": "Synthetic income", "kind": "income", "frequency": "monthly", "start_date": "2026-10-17", "category": "Synthetic category", "source": "Synthetic source"}]}, "confirmation_token": "a0d00b4da72fba9caeec3e3453fac4ab9cacbc4db84518258e4664b802527918"}
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "applied",
+    "confirmation_token": "a0d00b4da72fba9caeec3e3453fac4ab9cacbc4db84518258e4664b802527918",
+    "changes": [
+      {
+        "section": "accounts",
+        "id": "synthetic-account",
+        "before": null,
+        "after": {
+          "id": "synthetic-account",
+          "label": "Synthetic broker",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": null,
+          "type": "investment",
+          "balance": null
+        }
+      },
+      {
+        "section": "assets",
+        "id": "synthetic-asset",
+        "before": null,
+        "after": {
+          "id": "synthetic-asset",
+          "label": "Synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        }
+      },
+      {
+        "section": "debts",
+        "id": "synthetic-debt",
+        "before": null,
+        "after": {
+          "id": "synthetic-debt",
+          "label": "Synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        }
+      },
+      {
+        "section": "transactions",
+        "id": "synthetic-transaction",
+        "before": null,
+        "after": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        }
+      },
+      {
+        "section": "cashflows",
+        "id": "synthetic-cashflow",
+        "before": null,
+        "after": {
+          "id": "synthetic-cashflow",
+          "label": "Synthetic income",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections accounts
+{
+  "contract_version": "topo2.cli/3",
+  "command": "show",
+  "result": {
+    "schema_version": "topo2.context/6",
+    "context_id": "41109666-1efd-4ff1-825a-dc4754eff74e",
+    "accounts": [
+      {
+        "id": "synthetic-account",
+        "label": "Synthetic broker",
+        "currency": "EUR",
+        "as_of": null,
+        "availability": null,
+        "availability_note": null,
+        "type": "investment",
+        "balance": null
+      }
+    ]
+  }
+}
+
+
+$ topo2 change
+{"assets": {"patch": [{"id": "synthetic-asset", "label": "Updated synthetic asset"}]}, "debts": {"patch": [{"id": "synthetic-debt", "label": "Updated synthetic debt"}]}, "transactions": {"patch": [{"id": "synthetic-transaction", "description": "Updated synthetic transaction"}]}, "cashflows": {"patch": [{"id": "synthetic-cashflow", "label": "Updated synthetic cashflow"}]}}
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "preview",
+    "confirmation_token": "cb9f426e5dd66a45593c834f5368105e699b7a3ec6114c17af4ea791014b365e",
+    "changes": [
+      {
+        "section": "assets",
+        "id": "synthetic-asset",
+        "before": {
+          "id": "synthetic-asset",
+          "label": "Synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        },
+        "after": {
+          "id": "synthetic-asset",
+          "label": "Updated synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        }
+      },
+      {
+        "section": "debts",
+        "id": "synthetic-debt",
+        "before": {
+          "id": "synthetic-debt",
+          "label": "Synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        },
+        "after": {
+          "id": "synthetic-debt",
+          "label": "Updated synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        }
+      },
+      {
+        "section": "transactions",
+        "id": "synthetic-transaction",
+        "before": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        },
+        "after": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Updated synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        }
+      },
+      {
+        "section": "cashflows",
+        "id": "synthetic-cashflow",
+        "before": {
+          "id": "synthetic-cashflow",
+          "label": "Synthetic income",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        },
+        "after": {
+          "id": "synthetic-cashflow",
+          "label": "Updated synthetic cashflow",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 change
+{"assets": {"patch": [{"id": "synthetic-asset", "label": "Updated synthetic asset"}]}, "debts": {"patch": [{"id": "synthetic-debt", "label": "Updated synthetic debt"}]}, "transactions": {"patch": [{"id": "synthetic-transaction", "description": "Updated synthetic transaction"}]}, "cashflows": {"patch": [{"id": "synthetic-cashflow", "label": "Updated synthetic cashflow"}]}, "confirmation_token": "cb9f426e5dd66a45593c834f5368105e699b7a3ec6114c17af4ea791014b365e"}
+{
+  "contract_version": "topo2.cli/3",
+  "command": "change",
+  "result": {
+    "status": "applied",
+    "confirmation_token": "cb9f426e5dd66a45593c834f5368105e699b7a3ec6114c17af4ea791014b365e",
+    "changes": [
+      {
+        "section": "assets",
+        "id": "synthetic-asset",
+        "before": {
+          "id": "synthetic-asset",
+          "label": "Synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        },
+        "after": {
+          "id": "synthetic-asset",
+          "label": "Updated synthetic asset",
+          "currency": "EUR",
+          "as_of": null,
+          "availability": null,
+          "availability_note": "Synthetic note",
+          "type": "etf",
+          "value": null,
+          "broker_account_id": "synthetic-account"
+        }
+      },
+      {
+        "section": "debts",
+        "id": "synthetic-debt",
+        "before": {
+          "id": "synthetic-debt",
+          "label": "Synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        },
+        "after": {
+          "id": "synthetic-debt",
+          "label": "Updated synthetic debt",
+          "currency": "EUR",
+          "as_of": null,
+          "type": "loan",
+          "amount": null,
+          "interest_rate": "2",
+          "end_date": null,
+          "account_id": null
+        }
+      },
+      {
+        "section": "transactions",
+        "id": "synthetic-transaction",
+        "before": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        },
+        "after": {
+          "id": "synthetic-transaction",
+          "account_id": "synthetic-account",
+          "booking_date": "2026-10-17",
+          "amount": "-10",
+          "currency": "EUR",
+          "description": "Updated synthetic transaction",
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "kind": null
+        }
+      },
+      {
+        "section": "cashflows",
+        "id": "synthetic-cashflow",
+        "before": {
+          "id": "synthetic-cashflow",
+          "label": "Synthetic income",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        },
+        "after": {
+          "id": "synthetic-cashflow",
+          "label": "Updated synthetic cashflow",
+          "kind": "income",
+          "amount": null,
+          "currency": "EUR",
+          "frequency": "monthly",
+          "start_date": "2026-10-17",
+          "end_date": null,
+          "category": "Synthetic category",
+          "source": "Synthetic source",
+          "debt_id": null
+        }
+      }
+    ]
+  }
+}
+
+
+$ topo2 show --sections assets,debts,transactions,cashflows
+{
+  "contract_version": "topo2.cli/3",
+  "command": "show",
+  "result": {
+    "schema_version": "topo2.context/6",
+    "context_id": "41109666-1efd-4ff1-825a-dc4754eff74e",
+    "assets": [
+      {
+        "id": "synthetic-asset",
+        "label": "Updated synthetic asset",
+        "currency": "EUR",
+        "as_of": null,
+        "availability": null,
+        "availability_note": "Synthetic note",
+        "type": "etf",
+        "value": null,
+        "broker_account_id": "synthetic-account"
+      }
+    ],
+    "debts": [
+      {
+        "id": "synthetic-debt",
+        "label": "Updated synthetic debt",
+        "currency": "EUR",
+        "as_of": null,
+        "type": "loan",
+        "amount": null,
+        "interest_rate": "2",
+        "end_date": null,
+        "account_id": null
+      }
+    ],
+    "transactions": [
+      {
+        "id": "synthetic-transaction",
+        "account_id": "synthetic-account",
+        "booking_date": "2026-10-17",
+        "amount": "-10",
+        "currency": "EUR",
+        "description": "Updated synthetic transaction",
+        "category": "Synthetic category",
+        "source": "Synthetic source",
+        "kind": null
+      }
+    ],
+    "cashflows": [
+      {
+        "id": "synthetic-cashflow",
+        "label": "Updated synthetic cashflow",
+        "kind": "income",
+        "amount": null,
+        "currency": "EUR",
+        "frequency": "monthly",
+        "start_date": "2026-10-17",
+        "end_date": null,
+        "category": "Synthetic category",
+        "source": "Synthetic source",
+        "debt_id": null
+      }
+    ]
+  }
+}
+
+
+PASS: actual stored transaction excluded by accounts projection; assets/debts/transactions/cashflows patches preserve omitted optional values. All six record sections independently exercised in combined transcript.
